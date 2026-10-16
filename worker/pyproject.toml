@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thunderbot"
+version = "0.1.0"
+description = "Deterministic intraday/delivery trading engine for Groww with an LLM signal filter that cannot override hard risk limits."
+requires-python = ">=3.10"
+readme = "../README.md"
+dependencies = [
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+groww = ["growwapi>=1.5.0", "pyotp>=2.9"]
+llm = ["anthropic>=1.15.0", "pydantic>=2.6"]
+all = ["growwapi>=1.5.0", "pyotp>=2.9", "anthropic>=1.15.0", "pydantic>=2.6"]
+dev = ["pytest>=8", "pydantic>=2.6"]
+
+[project.scripts]
+thunderbot = "thunderbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["thunderbot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

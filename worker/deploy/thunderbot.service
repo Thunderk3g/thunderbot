@@ -1,0 +1,27 @@
+# systemd unit for the trading worker on a Mumbai VPS with a static IP.
+# Install: sudo cp deploy/thunderbot.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Paper first:  ExecStart=... thunderbot paper
+# Live later:   ExecStart=... thunderbot live --i-understand-the-risks   (plus TB_LIVE_TRADING_ENABLED=true)
+[Unit]
+Description=Thunderbot trading worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thunderbot
+Group=thunderbot
+WorkingDirectory=/opt/thunderbot/worker
+EnvironmentFile=/etc/thunderbot.env
+ExecStart=/opt/thunderbot/venv/bin/thunderbot paper
+Restart=on-failure
+RestartSec=30
+StateDirectory=thunderbot
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/thunderbot
+
+[Install]
+WantedBy=multi-user.target

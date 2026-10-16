@@ -1,0 +1,4 @@
+# NSE equity trading holidays, one ISO date per line (e.g. 2026-11-09).
+# This file ships EMPTY on purpose: copy the official list for the current year from
+# https://www.nseindia.com/resources/exchange-communication-holidays and keep it updated.
+# Weekends are handled automatically. Special sessions (e.g. Muhurat trading) are not modelled.

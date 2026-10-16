@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Runtime state - never commit
+.env
+*.env.local
+worker/var/
+worker/data/
+*.sqlite3
+instruments.csv
+
+# Node
+node_modules/
+.next/
+dashboard/.env*.local
+*.tsbuildinfo
