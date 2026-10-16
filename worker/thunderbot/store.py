@@ -157,11 +157,13 @@ class SupabaseStore:
         self.http.headers.update(
             {
                 "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
                 "Content-Type": "application/json",
                 "Prefer": "return=minimal,resolution=merge-duplicates",
             }
         )
+        # Legacy service_role keys are JWTs and also go in Authorization; new sb_secret_ keys must not.
+        if service_key.startswith("eyJ"):
+            self.http.headers["Authorization"] = f"Bearer {service_key}"
 
     def insert(self, table: str, row: dict[str, Any]) -> None:
         resp = self.http.post(f"{self.base}/{table}", data=json.dumps(_jsonable(row), default=str), timeout=self.timeout)

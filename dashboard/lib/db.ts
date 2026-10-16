@@ -12,8 +12,11 @@ function config() {
   return { base: `${url.replace(/\/$/, "")}/rest/v1`, key };
 }
 
-function headers(key: string, extra: Record<string, string> = {}) {
-  return { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...extra };
+function headers(key: string, extra: Record<string, string> = {}): Record<string, string> {
+  const h: Record<string, string> = { apikey: key, "Content-Type": "application/json", ...extra };
+  // Legacy service_role keys are JWTs and also go in Authorization; new sb_secret_ keys must not.
+  if (key.startsWith("eyJ")) h.Authorization = `Bearer ${key}`;
+  return h;
 }
 
 /** Build a PostgREST query string; values are URL-encoded (ISO timestamps contain '+'). */
