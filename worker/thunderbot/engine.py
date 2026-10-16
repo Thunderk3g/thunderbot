@@ -42,6 +42,7 @@ from .models import (
 )
 from .risk import RiskManager
 from .store import CompositeStore, new_id
+from .strategy import build_strategy, catalog
 from .strategy.base import Strategy
 
 log = logging.getLogger(__name__)
@@ -87,7 +88,10 @@ class TradingEngine:
         sleep_fn: Callable[[float], None] = time.sleep,
         before_market_tick: Callable[[datetime], None] | None = None,
         require_login_confirmation: bool = False,
+        filter_factory: Callable[[Settings], SignalFilter] | None = None,
+        equity_interval_seconds: float = 60.0,
     ) -> None:
+        self.base_settings = settings  # env-loaded; dashboard overrides are always applied on top of this
         self.s = settings
         self.broker = broker
         self.quotes = quotes
@@ -110,11 +114,23 @@ class TradingEngine:
         self.state = EngineState()
         self._prior_bars: dict[str, list] = {}
         self._last_prices: dict[str, float] = {}
+        self.filter_factory = filter_factory
+        self._applied_overrides: dict | None = None
+        # Every signal is tracked virtually to its stop/target/EOD so the journal holds an outcome for
+        # signals that were vetoed or never filled too. That is what measures whether the LLM adds value.
+        self._shadows: dict[str, dict] = {}
+        self.equity_interval = timedelta(seconds=equity_interval_seconds)
+        self._last_equity_at: datetime | None = None
+
+    def publish_static(self) -> None:
+        self.store.set_control("strategy_catalog", catalog())
+        self.store.set_control("effective_settings", {**self.s.public_view(), "rejected": {}})
 
     # Main loop
 
     def run_forever(self) -> None:
         self.store.event("engine_start", f"engine started in {self.mode} mode", symbols=self.s.symbols)
+        self.publish_static()
         self.reconcile()
         while True:
             try:
@@ -150,13 +166,72 @@ class TradingEngine:
         now = to_ist(self.now())
         self._roll_day(now)
         control = self.store.get_control()
+        self._apply_overrides(control.get("settings_overrides") or {})
+        try:
+            self._tick(now, control)
+        finally:
+            self._publish_heartbeat(now, control)
+
+    def _unrealized(self) -> float:
+        return sum(p.unrealized(self._last_prices.get(s, p.entry_price)) for s, p in self.positions.items())
+
+    def _publish_heartbeat(self, now: datetime, control: dict) -> None:
+        positions = []
+        for sym, p in self.positions.items():
+            ltp = self._last_prices.get(sym, p.entry_price)
+            positions.append({
+                "symbol": sym, "side": p.side.value, "qty": p.qty, "entry": p.entry_price, "stop": p.stop,
+                "target": p.target, "ltp": ltp, "unrealized": round(p.unrealized(ltp), 2),
+                "opened_at": p.opened_at.isoformat(), "product": p.product.value,
+            })
+        unrealized = self._unrealized()
+        self.store.set_control("heartbeat", {
+            "at": now.isoformat(), "wall_at": now_ist().isoformat(), "mode": self.mode, "strategy": self.s.strategy,
+            "open_positions": len(self.positions), "positions": positions,
+            "realized_pnl": round(self.risk.state.realized_pnl, 2), "unrealized_pnl": round(unrealized, 2),
+            "trades_today": self.risk.state.trades_opened, "halted": self.risk.state.halted,
+            "halt_reason": self.risk.state.halt_reason, "market_open": self.clock.is_market_open(now),
+            "capital": self.s.capital, "llm_enabled": self.filter.enabled,
+            "reviewer": getattr(self.filter, "label", "none"),
+        })
+        if self.clock.is_market_open(now) and (
+            self._last_equity_at is None or now - self._last_equity_at >= self.equity_interval
+        ):
+            self._last_equity_at = now
+            self.store.insert("equity", {
+                "at": now.isoformat(), "mode": self.mode, "realized_pnl": round(self.risk.state.realized_pnl, 2),
+                "unrealized_pnl": round(unrealized, 2), "open_positions": len(self.positions),
+            })
+
+    def _apply_overrides(self, overrides: dict) -> None:
+        if overrides == self._applied_overrides:
+            return
+        first = self._applied_overrides is None
+        self._applied_overrides = overrides
+        new, rejected = self.base_settings.with_overrides(overrides)
+        old = self.s
+        self.s = new
+        self.risk.s = new
+        self.clock = new.clock()
+        self.risk.clock = self.clock
+        if (new.strategy, new.strategy_params, new.allow_short) != (old.strategy, old.strategy_params, old.allow_short):
+            fired = getattr(self.strategy, "_fired", set())
+            self.strategy = build_strategy(new.strategy, new.strategy_params, new.allow_short)
+            # Keep "one signal per symbol per day" across a mid-day strategy switch.
+            if hasattr(self.strategy, "_fired"):
+                self.strategy._fired = set(fired)
+        if self.filter_factory is not None and new.llm_enabled != old.llm_enabled:
+            self.filter = self.filter_factory(new)
+        elif hasattr(self.filter, "s"):
+            self.filter.s = new
+        self.store.set_control("effective_settings", {**new.public_view(), "rejected": rejected})
+        if overrides or not first:
+            self.store.event("settings_applied", "dashboard settings applied" + (f"; rejected: {rejected}" if rejected else ""),
+                             overrides=overrides, rejected=rejected)
+
+    def _tick(self, now: datetime, control: dict) -> None:
         kill = bool(control.get("kill_switch"))
         paused = bool(control.get("paused"))
-        self.store.set_control("heartbeat", {
-            "at": now.isoformat(), "mode": self.mode, "open_positions": len(self.positions),
-            "realized_pnl": round(self.risk.state.realized_pnl, 2), "halted": self.risk.state.halted,
-        })
-
         if not self.clock.is_market_open(now):
             return
         if self.before_market_tick is not None:
@@ -170,8 +245,9 @@ class TradingEngine:
                 self.broker.update_price(sym, px)
 
         self._manage_positions(now)
+        self._update_shadows(now)
 
-        unrealized = sum(p.unrealized(self._last_prices.get(s, p.entry_price)) for s, p in self.positions.items())
+        unrealized = self._unrealized()
         was_halted = self.risk.state.halted
         if self.risk.check_daily_loss(unrealized) and not was_halted:
             self.store.event("halt", self.risk.state.halt_reason)
@@ -188,6 +264,7 @@ class TradingEngine:
         if reason and self.positions:
             self.flatten_all(reason)
         if eod:
+            self._close_all_shadows(now, "eod")
             return
 
         bar_start = self.clock.last_completed_bar_start(now, self.s.interval_minutes)
@@ -206,6 +283,8 @@ class TradingEngine:
 
     def _roll_day(self, now: datetime) -> None:
         if self.state.day != now.date():
+            if self._shadows:
+                self._close_all_shadows(now, "eod")
             self.state = EngineState(day=now.date())
             self.risk.roll_day(now)
             self.strategy.reset_day()
@@ -281,6 +360,13 @@ class TradingEngine:
             "kind": "risk_verdict", "message": "approved" if verdict.approved else "; ".join(verdict.reasons),
             "data": {"signal_id": signal_id, "qty": verdict.qty, "size_multiplier": verdict.size_multiplier},
         })
+        self._shadows[signal_id] = {
+            "signal_id": signal_id, "symbol": signal.symbol, "strategy": signal.strategy, "side": signal.side.value,
+            "entry": signal.entry, "stop": signal.stop, "target": signal.target, "signal_ts": signal.ts.isoformat(),
+            "llm_decision": "none" if decision is None else ("approve" if decision.approve else "reject"),
+            "llm_size_multiplier": None if decision is None else decision.size_multiplier,
+            "risk_approved": verdict.approved,
+        }
         if verdict.approved:
             self._enter(signal, verdict.qty, signal_id, now)
 
@@ -354,6 +440,30 @@ class TradingEngine:
             elif (long and ltp <= pos.stop) or (not long and ltp >= pos.stop):
                 # Broker stop should have fired; SL-limit can be skipped on a fast move.
                 self._exit(pos, "stop_soft", now)
+
+    def _update_shadows(self, now: datetime) -> None:
+        for sid, sh in list(self._shadows.items()):
+            ltp = self._last_prices.get(sh["symbol"])
+            if ltp is None:
+                continue
+            long = sh["side"] == "BUY"
+            if (long and ltp <= sh["stop"]) or (not long and ltp >= sh["stop"]):
+                self._close_shadow(sid, sh["stop"], "stop", now)
+            elif (long and ltp >= sh["target"]) or (not long and ltp <= sh["target"]):
+                self._close_shadow(sid, sh["target"], "target", now)
+
+    def _close_all_shadows(self, now: datetime, outcome: str) -> None:
+        for sid, sh in list(self._shadows.items()):
+            self._close_shadow(sid, self._last_prices.get(sh["symbol"], sh["entry"]), outcome, now)
+
+    def _close_shadow(self, sid: str, exit_price: float, outcome: str, now: datetime) -> None:
+        sh = self._shadows.pop(sid)
+        risk = abs(sh["entry"] - sh["stop"]) or 1e-9
+        sign = 1 if sh["side"] == "BUY" else -1
+        self.store.insert("signal_outcomes", {
+            **sh, "exit_price": round(exit_price, 2), "outcome": outcome, "closed_at": now.isoformat(),
+            "r_multiple": round((exit_price - sh["entry"]) * sign / risk, 3), "mode": self.mode,
+        })
 
     def flatten_all(self, reason: str) -> None:
         now = to_ist(self.now())

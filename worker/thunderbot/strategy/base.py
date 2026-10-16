@@ -16,6 +16,11 @@ class Strategy(abc.ABC):
     """
 
     name: str = "base"
+    label: str = ""
+    description: str = ""
+    params_cls: type = object
+    # UI form schema: [{"name", "label", "type": "int"|"float", "min", "max", "step"}]
+    param_specs: list[dict] = []
 
     @abc.abstractmethod
     def on_bar(

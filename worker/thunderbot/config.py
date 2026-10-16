@@ -9,9 +9,11 @@ warning.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .clock import MarketClock, load_holidays, parse_hhmm
 
@@ -21,6 +23,35 @@ HARD_MAX_ORDERS_PER_MINUTE = 250  # Groww order rate limit
 HARD_MAX_LEVERAGE = 5.0  # ~20% upfront margin for MIS under peak-margin rules
 HARD_MAX_RISK_PER_TRADE_PCT = 2.0
 HARD_MAX_DAILY_LOSS_PCT = 10.0
+LATEST_FLATTEN = "15:15"  # Groww auto-squares MIS at 15:20
+
+LLM_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+# Keys the dashboard may change at runtime, with (type, min, max) bounds.
+# Live trading, MTF, the static IP, credentials and login policy are deliberately absent:
+# they can only be changed in the worker's environment on the VPS.
+OVERRIDABLE: dict[str, tuple[str, float | None, float | None]] = {
+    "capital": ("float", 1_000, 100_000_000),
+    "risk_per_trade_pct": ("float", 0.05, HARD_MAX_RISK_PER_TRADE_PCT),
+    "max_daily_loss_pct": ("float", 0.1, HARD_MAX_DAILY_LOSS_PCT),
+    "max_open_positions": ("int", 1, 20),
+    "max_trades_per_day": ("int", 1, 50),
+    "max_leverage": ("float", 0.1, HARD_MAX_LEVERAGE),
+    "max_position_notional_pct": ("float", 1, 100),
+    "max_stop_distance_pct": ("float", 0.1, 10),
+    "allow_short": ("bool", None, None),
+    "symbols": ("symbols", None, None),
+    "entry_start": ("hhmm", None, None),
+    "entry_end": ("hhmm", None, None),
+    "flatten_at": ("hhmm", None, None),
+    "price_protection_pct": ("float", 0.05, 3),
+    "llm_enabled": ("bool", None, None),
+    "llm_effort": ("enum", None, None),
+    "llm_fail_mode": ("enum", None, None),
+    "llm_min_confidence": ("float", 0, 1),
+    "strategy": ("strategy", None, None),
+    "strategy_params": ("params", None, None),
+}
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -54,6 +85,10 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 
 @dataclass
 class Settings:
+    # Strategy
+    strategy: str = "orb"
+    strategy_params: dict[str, Any] = field(default_factory=dict)
+
     # Capital and risk
     capital: float = 100_000.0
     risk_per_trade_pct: float = 0.5
@@ -102,6 +137,7 @@ class Settings:
 
     # Persistence
     data_dir: str = "var"
+    backtest_data_dir: str = "data/groww"
     supabase_url: str | None = None
     supabase_service_key: str | None = None
 
@@ -110,6 +146,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         s = cls(
+            strategy=_env("TB_STRATEGY", cls.strategy) or cls.strategy,
             capital=_env_float("TB_CAPITAL", cls.capital),
             risk_per_trade_pct=_env_float("TB_RISK_PER_TRADE_PCT", cls.risk_per_trade_pct),
             max_daily_loss_pct=_env_float("TB_MAX_DAILY_LOSS_PCT", cls.max_daily_loss_pct),
@@ -147,6 +184,7 @@ class Settings:
             allow_mtf_api=_env_bool("TB_ALLOW_MTF_API", False),
             require_login_confirmation=_env_bool("TB_REQUIRE_LOGIN_CONFIRMATION", True),
             data_dir=_env("TB_DATA_DIR", cls.data_dir) or cls.data_dir,
+            backtest_data_dir=_env("TB_BACKTEST_DATA_DIR", cls.backtest_data_dir) or cls.backtest_data_dir,
             supabase_url=_env("SUPABASE_URL"),
             supabase_service_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
         )
@@ -168,6 +206,93 @@ class Settings:
         if self.llm_fail_mode not in ("reject", "pass"):
             self.warnings.append(f"llm_fail_mode={self.llm_fail_mode!r} invalid; using 'reject'")
             self.llm_fail_mode = "reject"
+
+    def with_overrides(self, overrides: dict[str, Any] | None) -> tuple["Settings", dict[str, str]]:
+        """Return a copy with dashboard overrides applied, plus {key: reason} for rejected keys.
+
+        Always derive from the env-loaded base settings so overrides never accumulate.
+        """
+        from .strategy import STRATEGIES, coerce_params
+
+        new = dataclasses.replace(self, warnings=[], symbols=list(self.symbols), strategy_params=dict(self.strategy_params))
+        rejected: dict[str, str] = {}
+        for key, value in (overrides or {}).items():
+            spec = OVERRIDABLE.get(key)
+            if spec is None:
+                rejected[key] = "not editable from the dashboard"
+                continue
+            kind, lo, hi = spec
+            try:
+                if kind in ("float", "int"):
+                    v = float(value)
+                    if lo is not None and v < lo or hi is not None and v > hi:
+                        rejected[key] = f"must be between {lo} and {hi}"
+                        continue
+                    setattr(new, key, int(v) if kind == "int" else v)
+                elif kind == "bool":
+                    setattr(new, key, bool(value))
+                elif kind == "symbols":
+                    syms = [str(x).strip().upper() for x in value if str(x).strip()]
+                    if not syms or not all(x.replace("-", "").replace("&", "").isalnum() for x in syms):
+                        rejected[key] = "symbols must be non-empty NSE trading symbols"
+                        continue
+                    new.symbols = syms[:50]
+                elif kind == "hhmm":
+                    parse_hhmm(str(value))
+                    if key == "flatten_at" and str(value) > LATEST_FLATTEN:
+                        rejected[key] = f"must be at or before {LATEST_FLATTEN} (Groww squares off MIS at 15:20)"
+                        continue
+                    setattr(new, key, str(value))
+                elif kind == "enum":
+                    allowed = LLM_EFFORTS if key == "llm_effort" else ("reject", "pass")
+                    if value not in allowed:
+                        rejected[key] = f"must be one of {allowed}"
+                        continue
+                    setattr(new, key, value)
+                elif kind == "strategy":
+                    if value not in STRATEGIES:
+                        rejected[key] = f"unknown strategy; choose from {sorted(STRATEGIES)}"
+                        continue
+                    new.strategy = value
+                elif kind == "params":
+                    if not isinstance(value, dict):
+                        rejected[key] = "must be an object"
+                        continue
+                    new.strategy_params = dict(value)
+            except (TypeError, ValueError) as e:
+                rejected[key] = f"invalid value: {e}"
+        if parse_hhmm(new.entry_start) >= parse_hhmm(new.entry_end):
+            rejected["entry_window"] = "entry_start must be before entry_end; window left unchanged"
+            new.entry_start, new.entry_end = self.entry_start, self.entry_end
+        new.strategy_params = coerce_params(new.strategy, new.strategy_params)
+        new.apply_hard_limits()
+        return new, rejected
+
+    def public_view(self) -> dict[str, Any]:
+        """Effective settings for the dashboard. Never includes credentials."""
+        editable = {k: getattr(self, k) for k in OVERRIDABLE}
+        return {
+            "editable": editable,
+            "bounds": {k: {"type": t, "min": lo, "max": hi} for k, (t, lo, hi) in OVERRIDABLE.items()},
+            "env_only": {
+                "live_trading_enabled": self.live_trading_enabled,
+                "allow_mtf_api": self.allow_mtf_api,
+                "require_login_confirmation": self.require_login_confirmation,
+                "static_ip_configured": bool(self.expected_static_ip),
+                "groww_configured": bool(self.groww_api_key),
+                "llm_model": self.llm_model,
+                "orders_per_second": self.orders_per_second,
+            },
+            "hard_ceilings": {
+                "orders_per_second": HARD_MAX_ORDERS_PER_SECOND,
+                "orders_per_minute": HARD_MAX_ORDERS_PER_MINUTE,
+                "max_leverage": HARD_MAX_LEVERAGE,
+                "risk_per_trade_pct": HARD_MAX_RISK_PER_TRADE_PCT,
+                "max_daily_loss_pct": HARD_MAX_DAILY_LOSS_PCT,
+                "latest_flatten": LATEST_FLATTEN,
+            },
+            "llm_efforts": list(LLM_EFFORTS),
+        }
 
     def clock(self) -> MarketClock:
         return MarketClock(

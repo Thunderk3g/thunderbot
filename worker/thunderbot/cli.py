@@ -16,7 +16,7 @@ from .config import Settings
 from .costs import CostModel
 from .data import CSVMarketData, GrowwMarketData, synthetic_history, write_csv
 from .store import build_store
-from .strategy.orb import OpeningRangeBreakout, ORBParams
+from .strategy import Strategy, build_strategy
 
 log = logging.getLogger("thunderbot")
 
@@ -28,8 +28,8 @@ def _settings() -> Settings:
     return s
 
 
-def _strategy(s: Settings) -> OpeningRangeBreakout:
-    return OpeningRangeBreakout(ORBParams(allow_short=s.allow_short))
+def _strategy(s: Settings) -> Strategy:
+    return build_strategy(s.strategy, s.strategy_params, s.allow_short)
 
 
 def _groww_session(s: Settings):
@@ -129,10 +129,74 @@ def _run_engine(s: Settings, mode: str) -> int:
     engine = TradingEngine(
         settings=s, broker=broker, quotes=groww, data=GrowwMarketData(client, exchange=s.exchange),
         strategy=_strategy(s), signal_filter=build_filter(s), store=store, mode=mode,
-        before_market_tick=refresh_token,
+        before_market_tick=refresh_token, filter_factory=build_filter,
         require_login_confirmation=(mode == "live" and s.require_login_confirmation),
     )
     engine.run_forever()
+    return 0
+
+
+def _groww_factory(s: Settings):
+    if not s.groww_api_key:
+        return None
+    return lambda: _groww_client(s)
+
+
+def cmd_serve(args, s: Settings) -> int:
+    import os
+    import secrets as _secrets
+
+    from .server import serve
+
+    key = os.environ.get("TB_LOCAL_API_KEY") or _secrets.token_urlsafe(24)
+    if "TB_LOCAL_API_KEY" not in os.environ:
+        print(f"TB_LOCAL_API_KEY not set; generated one for this session:\n  {key}")
+    httpd = serve(s, args.host, args.port, key, run_jobs=not args.no_jobs, groww_client_factory=_groww_factory(s))
+    print(f"Local API on http://{args.host}:{args.port}. Dashboard env:\n"
+          f"  SUPABASE_URL=http://{args.host}:{args.port}\n  SUPABASE_SERVICE_ROLE_KEY={key}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_jobs(args, s: Settings) -> int:
+    from .jobs import JobRunner
+
+    store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    JobRunner(store, s, _groww_factory(s)).run_forever()
+    return 0
+
+
+def cmd_replay(args, s: Settings) -> int:
+    from .llm.filter import build_filter
+    from .replay import run_replay
+
+    if args.data:
+        md = CSVMarketData(args.data)
+        if args.all_files:
+            s.symbols = md.symbols()
+        far = datetime(2000, 1, 1, tzinfo=IST), datetime(2100, 1, 1, tzinfo=IST)
+        data = {sym: md.candles(sym, s.interval_minutes, *far) for sym in s.symbols}
+    else:
+        data = synthetic_history(s.symbols, date.fromisoformat(args.start), args.days, s.interval_minutes, seed=args.seed)
+        print("Replaying SYNTHETIC data (random walk). Results say nothing about real markets.")
+    if args.days and args.data:
+        days = sorted({c.ts.date() for bars in data.values() for c in bars})[-args.days:]
+        keep = set(days)
+        data = {sym: [c for c in bars if c.ts.date() in keep] for sym, bars in data.items()}
+    store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    reviewer = args.reviewer
+    if reviewer == "claude":
+        s.llm_enabled = True
+        reviewer = "auto"
+    engine = run_replay(
+        s, data, store, build_filter(s, reviewer), speed=args.speed,
+        filter_factory=lambda st: build_filter(st, reviewer),
+        on_day=lambda d: print(f"replaying {d}"),
+    )
+    print(f"done. realized P&L on the last day: {engine.risk.state.realized_pnl:.2f}")
     return 0
 
 
@@ -216,6 +280,25 @@ def build_parser() -> argparse.ArgumentParser:
     b.set_defaults(func=cmd_backtest)
 
     sub.add_parser("paper", help="paper trade against live Groww prices").set_defaults(func=cmd_paper)
+
+    sv = sub.add_parser("serve", help="local API for the dashboard (stands in for Supabase) + job runner")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8787)
+    sv.add_argument("--no-jobs", action="store_true")
+    sv.set_defaults(func=cmd_serve)
+
+    sub.add_parser("jobs", help="run dashboard research jobs (backtests, sweeps)").set_defaults(func=cmd_jobs)
+
+    rp = sub.add_parser("replay", help="replay history through the real engine + paper broker (watch it on the dashboard)")
+    rp.add_argument("--data", help="directory of <SYMBOL>.csv files (default: synthetic data)")
+    rp.add_argument("--all-files", action="store_true")
+    rp.add_argument("--days", type=int, default=20, help="number of sessions (last N for --data)")
+    rp.add_argument("--start", default="2026-01-05", help="synthetic data start date")
+    rp.add_argument("--seed", type=int, default=7)
+    rp.add_argument("--speed", type=float, default=0.0, help="real seconds to wait per bar (0 = as fast as possible)")
+    rp.add_argument("--reviewer", choices=("none", "heuristic", "claude", "auto"), default="auto",
+                    help="signal reviewer: claude costs money; heuristic is a free rule-based baseline")
+    rp.set_defaults(func=cmd_replay)
     lv = sub.add_parser("live", help="trade live on Groww (requires static IP + explicit opt-in)")
     lv.add_argument("--i-understand-the-risks", action="store_true")
     lv.set_defaults(func=cmd_live)

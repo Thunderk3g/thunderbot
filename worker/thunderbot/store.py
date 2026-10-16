@@ -24,7 +24,19 @@ from .clock import now_ist
 
 log = logging.getLogger(__name__)
 
-TABLES = ("events", "signals", "llm_decisions", "orders", "trades")
+TABLES = ("events", "signals", "llm_decisions", "orders", "trades", "jobs", "equity", "signal_outcomes")
+
+
+def _matches(row: dict[str, Any], filters: dict[str, Any] | None) -> bool:
+    for k, v in (filters or {}).items():
+        if str(row.get(k)) != str(v):
+            return False
+    return True
+
+
+def _sort_key(value: Any) -> tuple:
+    # None sorts first; mixed types compare as strings
+    return (value is not None, value if isinstance(value, (int, float)) else str(value))
 
 
 def _jsonable(value: Any) -> Any:
@@ -60,7 +72,7 @@ class SQLiteStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS journal (id TEXT PRIMARY KEY, tbl TEXT NOT NULL, ts TEXT NOT NULL, row TEXT NOT NULL)"
@@ -86,6 +98,38 @@ class SQLiteStore:
                 "SELECT row FROM journal WHERE tbl = ? ORDER BY ts DESC LIMIT ?", (table, limit)
             )
             return [json.loads(r[0]) for r in cur.fetchall()]
+
+    def select(
+        self,
+        table: str,
+        filters: dict[str, Any] | None = None,
+        order: str = "created_at",
+        desc: bool = True,
+        limit: int = 100,
+        scan: int = 20_000,
+    ) -> list[dict[str, Any]]:
+        """Equality-filtered, ordered rows. Scans the newest ``scan`` rows of the table."""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT row FROM journal WHERE tbl = ? ORDER BY ts DESC LIMIT ?", (table, scan)
+            )
+            rows = [json.loads(r[0]) for r in cur.fetchall()]
+        rows = [r for r in rows if _matches(r, filters)]
+        rows.sort(key=lambda r: _sort_key(r.get(order)), reverse=desc)
+        return rows[:limit]
+
+    def update(self, table: str, row_id: str, fields: dict[str, Any]) -> None:
+        fields = _jsonable(fields)
+        with self._lock:
+            cur = self._conn.execute("SELECT row FROM journal WHERE id = ? AND tbl = ?", (row_id, table))
+            found = cur.fetchone()
+            row = json.loads(found[0]) if found else {"id": row_id, "created_at": now_ist().isoformat()}
+            row.update(fields)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO journal (id, tbl, ts, row) VALUES (?, ?, ?, ?)",
+                (row_id, table, row["created_at"], json.dumps(row, default=str)),
+            )
+            self._conn.commit()
 
     def get_control(self) -> dict[str, Any]:
         with self._lock:
@@ -123,6 +167,20 @@ class SupabaseStore:
         resp = self.http.post(f"{self.base}/{table}", data=json.dumps(_jsonable(row), default=str), timeout=self.timeout)
         resp.raise_for_status()
 
+    def select(self, table: str, filters: dict[str, Any] | None = None, order: str = "created_at",
+               desc: bool = True, limit: int = 100) -> list[dict[str, Any]]:
+        params = {"select": "*", "order": f"{order}.{'desc' if desc else 'asc'}", "limit": str(limit)}
+        for k, v in (filters or {}).items():
+            params[k] = f"eq.{v}"
+        resp = self.http.get(f"{self.base}/{table}", params=params, timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def update(self, table: str, row_id: str, fields: dict[str, Any]) -> None:
+        resp = self.http.patch(f"{self.base}/{table}", params={"id": f"eq.{row_id}"},
+                               data=json.dumps(_jsonable(fields), default=str), timeout=self.timeout)
+        resp.raise_for_status()
+
     def get_control(self) -> dict[str, Any]:
         resp = self.http.get(f"{self.base}/control", params={"select": "key,value"}, timeout=self.timeout)
         resp.raise_for_status()
@@ -158,6 +216,21 @@ class CompositeStore:
                 self.mirror.insert(table, row)
             except Exception as e:
                 log.warning("mirror insert into %s failed: %s", table, e)
+
+    def select(self, table: str, filters: dict[str, Any] | None = None, order: str = "created_at",
+               desc: bool = True, limit: int = 100) -> list[dict[str, Any]]:
+        """Reads come from the mirror when configured (the dashboard writes jobs there), else local."""
+        if self.mirror is not None:
+            return self.mirror.select(table, filters, order, desc, limit)
+        return self.local.select(table, filters, order, desc, limit)
+
+    def update(self, table: str, row_id: str, fields: dict[str, Any]) -> None:
+        if self.mirror is not None:
+            self.mirror.update(table, row_id, fields)
+        try:
+            self.local.update(table, row_id, fields)
+        except Exception as e:
+            log.warning("local update of %s/%s failed: %s", table, row_id, e)
 
     def get_control(self) -> dict[str, Any]:
         control = self.local.get_control()

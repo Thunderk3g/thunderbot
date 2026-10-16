@@ -25,6 +25,20 @@ class ORBParams:
 
 class OpeningRangeBreakout(Strategy):
     name = "orb"
+    label = "Opening range breakout"
+    description = (
+        "Trades the first close beyond the 15-minute opening range, confirmed by VWAP and a "
+        "relative-volume surge. Stop at the far side of the range, fixed reward-to-risk target."
+    )
+    params_cls = ORBParams
+    param_specs = [
+        {"name": "range_bars", "label": "Opening range bars", "type": "int", "min": 1, "max": 12, "step": 1},
+        {"name": "min_range_pct", "label": "Min range %", "type": "float", "min": 0.05, "max": 2.0, "step": 0.05},
+        {"name": "max_range_pct", "label": "Max range %", "type": "float", "min": 0.5, "max": 6.0, "step": 0.1},
+        {"name": "volume_mult", "label": "Volume surge x", "type": "float", "min": 0.5, "max": 4.0, "step": 0.1},
+        {"name": "reward_risk", "label": "Reward : risk", "type": "float", "min": 0.5, "max": 5.0, "step": 0.1},
+        {"name": "atr_stop_mult", "label": "ATR stop x", "type": "float", "min": 0.5, "max": 4.0, "step": 0.1},
+    ]
 
     def __init__(self, params: ORBParams | None = None) -> None:
         self.p = params or ORBParams()
@@ -71,7 +85,8 @@ class OpeningRangeBreakout(Strategy):
         avg_vol = self._baseline_volume(bar, session_bars, prior_bars)
         vol_ok = avg_vol > 0 and bar.volume >= p.volume_mult * avg_vol
 
-        history = list(prior_bars) + list(session_bars)
+        # Wilder ATR converges within a few periods, so a short tail keeps per-bar cost flat.
+        history = (list(prior_bars[-p.atr_period * 4:]) + list(session_bars))[-p.atr_period * 5:]
         a = atr(history, p.atr_period)
 
         side: Side | None = None

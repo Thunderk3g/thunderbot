@@ -1,81 +1,95 @@
 # Thunderbot
 
-A personal trading system for NSE cash equities on **Groww's Trade API**, built from the blueprint in
-[`docs/research-report.md`](docs/research-report.md):
+A personal trading system for NSE cash equities on **Groww's Trade API**, run from an animated
+web cockpit. Built from the blueprint in [`docs/research-report.md`](docs/research-report.md).
 
-- A **deterministic quant engine** generates every signal (Opening Range Breakout on 5-minute bars).
-- A **Claude review layer** can veto a signal or shrink its size. It can never create a trade, enlarge
-  one, or move its prices.
+- **Deterministic strategies** generate every signal: Opening Range Breakout, VWAP reversion and
+  EMA trend pullback, all on 5-minute bars.
+- A **signal reviewer** (Claude, or a free rule-based baseline) can veto a signal or shrink its
+  size. It can never create a trade, enlarge one, or move its prices.
 - **Hard risk limits** run last and always win: daily loss halt, position and trade caps,
   fixed-fractional sizing, leverage ceiling, kill switch, 3:05 PM flatten.
-- **SEBI retail-algo compliance** (April 2026 framework): static-IP check, order throttle hard-capped
-  below 10 orders/second, daily login confirmation, MPP-friendly marketable-limit orders, and a full
-  audit journal.
+- **SEBI retail-algo compliance** (April 2026 framework): static-IP check, order throttle capped
+  below 10 orders/second, daily login confirmation, marketable-limit orders, and a full audit journal.
 
-> **Read this first.** SEBI found that 71% of individual intraday cash traders lost money in FY23.
-> This code is a framework, not an edge. Backtest, then paper trade for at least 4-8 weeks, before
-> risking real money, and start tiny. The LLM layer is unproven: evaluate it in paper trading, not
-> in backtests, which LLM look-ahead bias inflates.
+> **No code can guarantee profit.** SEBI found that 71% of individual intraday cash traders lost
+> money in FY23. Thunderbot is built to find out *honestly* whether a strategy has an edge before
+> real money is at risk. The Lab's walk-forward test, the shadow outcome of every signal, and the
+> paper-then-live staging all exist for that. Most configurations will fail those tests; that is
+> the tool working.
 
-## Layout
+## The cockpit
 
-```
-worker/      Python trading worker (runs on a Mumbai VPS with a static IP)
-  thunderbot/  strategy, LLM filter, risk, brokers (Groww + paper), engine, backtester, CLI
-  tests/       68 tests covering risk rules, fills, engine lifecycle, Groww mapping, LLM clamping
-  deploy/      systemd unit, NSE holiday file
-dashboard/   Next.js monitor + kill switch for Vercel (Basic Auth, server-side Supabase access)
-supabase/    Postgres schema (RLS on, service-role access only)
-docs/        research report, architecture, runbook
-```
+| Tab | What it does |
+|---|---|
+| **Live** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. Hold-to-kill switch in the header. |
+| **Performance** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |
+| **Strategy lab** | Backtests and **walk-forward sweeps** run on the worker with the live engine's own code. Sweeps rank parameter sets on the first 70% of history and show how each did on the unseen last 30%. Promote a configuration to the engine in one click; configs that didn't hold up out-of-sample need a second, deliberate click. |
+| **Settings** | Strategy and parameters, capital and risk limits, universe and timing, reviewer. The worker validates and clamps everything. Live trading, MTF, the static IP and credentials are locked to the VPS environment, so the dashboard can never switch them on. |
+| **Journal** | Every event and order state, filterable. |
 
-## Quick start
+![Live tab during a replay: session P&L, an open position on its stop-to-target gauge, signals and session limits](docs/screenshots/live.png)
+
+Minimal UI, light and dark themes, spring animations (open-source [Motion](https://motion.dev)),
+charts by TradingView's open-source [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
+
+## Run it on one machine (no cloud, no broker account)
 
 ```bash
+# 1. worker
 cd worker
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[all,dev]"
-pytest
+export TB_LOCAL_API_KEY=pick-a-long-random-string
+thunderbot serve                                   # local API + research job runner on :8787
 
-thunderbot demo-data --out data/demo --days 120   # synthetic data, plumbing only
-thunderbot backtest --data data/demo
+# 2. in another terminal: stream a simulated session through the real engine
+thunderbot replay --speed 0.3 --reviewer heuristic # synthetic data; watch it trade live
+
+# 3. dashboard
+cd dashboard && npm ci
+SUPABASE_URL=http://127.0.0.1:8787 SUPABASE_SERVICE_ROLE_KEY=$TB_LOCAL_API_KEY \
+DASHBOARD_USER=me DASHBOARD_PASSWORD=secret npm run dev
+# open http://localhost:3000
 ```
 
-With a paid Groww Trade API plan:
+Synthetic data is a random walk, so expect every strategy to lose about its costs there. Use it to
+learn the tools. For real research, fetch Groww candles (`thunderbot fetch-history`, paid API plan)
+and pick **CSV** or **Groww** as the data source in the Lab.
 
-```bash
-export GROWW_API_KEY=... GROWW_TOTP_SECRET=...
-thunderbot fetch-history --out data/groww --days 365
-thunderbot backtest --data data/groww --trades-csv trades.csv
-thunderbot paper                     # paper trade against live Groww prices
+## Production layout
+
+```
+Mumbai VPS (static IP, whitelisted on Groww)          Vercel                Supabase
+  thunderbot paper|live  ── journal + heartbeat ──►                   ◄──  Postgres (RLS on)
+  thunderbot jobs        ◄── queued backtests ────    dashboard  ──────►  control: kill/pause/settings
 ```
 
-Live trading needs three explicit opt-ins: `TB_LIVE_TRADING_ENABLED=true`, a whitelisted
-`TB_EXPECTED_STATIC_IP` that matches the host's public IP, and
-`thunderbot live --i-understand-the-risks`. See [`docs/runbook.md`](docs/runbook.md).
+See [`docs/runbook.md`](docs/runbook.md) for the staged rollout (backtest, paper for 4-8 weeks,
+tiny live, scale) and [`docs/architecture.md`](docs/architecture.md) for the design.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `thunderbot backtest --data DIR` | Run the strategy over CSV candles (costs, slippage, conservative fills) |
+| `thunderbot serve` | Local stand-in for Supabase (PostgREST subset over SQLite) + job runner |
+| `thunderbot replay` | Replay history through the real engine and paper broker (`--speed`, `--reviewer`) |
+| `thunderbot jobs` | Run dashboard research jobs against Supabase (production) |
+| `thunderbot paper` / `live` | Run the trading engine against Groww |
+| `thunderbot backtest --data DIR` | CLI backtest over CSV candles |
 | `thunderbot fetch-history` | Download candles from Groww, paginated per Groww's window limits |
-| `thunderbot demo-data` | Write synthetic CSVs for plumbing tests |
-| `thunderbot paper` / `live` | Run the trading engine |
-| `thunderbot kill` / `pause` / `resume` | Control plane (also on the dashboard) |
-| `thunderbot confirm-login` | Confirm today's broker login (daily 2FA policy) |
+| `thunderbot kill` / `pause` / `resume` / `confirm-login` | Control plane (also in the dashboard) |
 | `thunderbot check-ip` | Verify the public IP is the whitelisted static IP |
 
-All settings are environment variables; see [`worker/.env.example`](worker/.env.example).
+Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=true`, a
+`TB_EXPECTED_STATIC_IP` that matches the host's IP, and `thunderbot live --i-understand-the-risks`.
 
-## Key decisions
+## Repository
 
-- **MTF is off.** `growwapi` 1.5.0 defines `PRODUCT_MTF`, but Groww's docs don't list it and server
-  support is unverified. Keep `TB_ALLOW_MTF_API=false` until confirmed on a live account.
-- **No naked MARKET orders.** Entries and exits are marketable LIMITs inside a price-protection band.
-  Exits retry with a wider band, and a broker-side SL order protects every open position.
-- **The LLM is off by default** (`TB_LLM_ENABLED=false`). When on, it uses `claude-opus-5-5` once per
-  signal with structured output, fails closed on errors, and every prompt and decision is journaled.
-- **SQLite is the source of truth on the VPS**; Supabase is a best-effort mirror for the dashboard.
-
-More detail in [`docs/architecture.md`](docs/architecture.md).
+```
+worker/      Python engine: strategies, reviewer, risk, Groww + paper brokers, backtester,
+             replay, jobs, local API, CLI. 88 tests.
+dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
+supabase/    Postgres schema migrations
+docs/        research report, architecture, runbook
+```

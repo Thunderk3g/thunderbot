@@ -60,3 +60,23 @@ def opening_range(bars: Sequence[Candle], n_bars: int) -> tuple[float, float] | 
 
 def mean(values: Sequence[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def rsi(values: Sequence[float], period: int = 14) -> float | None:
+    """Wilder RSI of the last value. None until there are ``period + 1`` values."""
+    if len(values) <= period:
+        return None
+    gains = losses = 0.0
+    for i in range(1, period + 1):
+        d = values[i] - values[i - 1]
+        gains += max(d, 0.0)
+        losses += max(-d, 0.0)
+    avg_g, avg_l = gains / period, losses / period
+    for i in range(period + 1, len(values)):
+        d = values[i] - values[i - 1]
+        avg_g = (avg_g * (period - 1) + max(d, 0.0)) / period
+        avg_l = (avg_l * (period - 1) + max(-d, 0.0)) / period
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100.0 - 100.0 / (1.0 + rs)

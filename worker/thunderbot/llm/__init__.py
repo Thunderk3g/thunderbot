@@ -1,8 +1,15 @@
-from .filter import ClaudeSignalFilter, PassThroughFilter, SignalFilter, build_filter
+from .filter import (
+    ClaudeSignalFilter,
+    HeuristicFilter,
+    PassThroughFilter,
+    SignalFilter,
+    build_filter,
+)
 from .types import LLMDecision, ReviewContext
 
 __all__ = [
     "ClaudeSignalFilter",
+    "HeuristicFilter",
     "PassThroughFilter",
     "SignalFilter",
     "build_filter",

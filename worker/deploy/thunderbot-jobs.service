@@ -1,0 +1,27 @@
+# Research job runner: executes backtests and walk-forward sweeps queued from the dashboard.
+# Runs next to the trading worker; never places orders.
+# Install: sudo cp deploy/thunderbot-jobs.service /etc/systemd/system/ && sudo systemctl enable --now thunderbot-jobs
+[Unit]
+Description=Thunderbot research job runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thunderbot
+Group=thunderbot
+WorkingDirectory=/opt/thunderbot/worker
+EnvironmentFile=/etc/thunderbot.env
+ExecStart=/opt/thunderbot/venv/bin/thunderbot jobs
+Restart=on-failure
+RestartSec=30
+StateDirectory=thunderbot
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/thunderbot
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

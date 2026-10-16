@@ -55,9 +55,45 @@ class PassThroughFilter:
     """Used when the LLM layer is disabled (and by default in backtests)."""
 
     enabled = False
+    label = "none"
 
     def review(self, ctx: ReviewContext) -> LLMDecision:
         return LLMDecision.passthrough()
+
+
+class HeuristicFilter:
+    """A rule-based reviewer with the same contract as the LLM: veto or shrink, never enlarge.
+
+    It costs nothing and is a baseline. If Claude's reviews can't beat these rules in
+    the signal-outcome journal, the LLM isn't earning its cost. Decisions are labelled
+    ``model="heuristic"`` so they are never mistaken for LLM output.
+    """
+
+    enabled = True
+    label = "heuristic"
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.s = settings
+
+    def review(self, ctx: ReviewContext) -> LLMDecision:
+        sig = ctx.signal
+        flags: list[str] = []
+        stop_pct = sig.risk_per_share / sig.entry * 100 if sig.entry else 0.0
+        vol = sig.features.get("volume_ratio")
+        if sig.ts.hour * 60 + sig.ts.minute >= 13 * 60 + 30:
+            flags.append("late_session")
+        if vol is not None and vol < 1.5:
+            flags.append("low_volume")
+        if sig.reward_risk < 1.2:
+            flags.append("poor_reward")
+        if stop_pct > 1.5:
+            flags.append("wide_stop")
+        hard = {"late_session", "low_volume", "poor_reward"} & set(flags)
+        if hard:
+            return LLMDecision(False, 0.0, 0.7, f"Rule veto: {', '.join(sorted(hard))}.", flags, model="heuristic")
+        mult = 0.5 if "wide_stop" in flags else 1.0
+        return LLMDecision(True, mult, 0.7, "Rules passed" + (" (half size: wide stop)." if mult < 1 else "."),
+                           flags, model="heuristic")
 
 
 def build_user_message(ctx: ReviewContext) -> str:
@@ -101,6 +137,10 @@ def build_user_message(ctx: ReviewContext) -> str:
 
 class ClaudeSignalFilter:
     enabled = True
+
+    @property
+    def label(self) -> str:
+        return self.s.llm_model
 
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self.s = settings
@@ -187,7 +227,10 @@ def _review_output_model():
     return ReviewOutput
 
 
-def build_filter(settings: Settings) -> SignalFilter:
-    if not settings.llm_enabled:
+def build_filter(settings: Settings, reviewer: str = "auto") -> SignalFilter:
+    """``auto``: Claude when TB_LLM_ENABLED, else none. ``heuristic``: the free rule-based baseline."""
+    if reviewer == "heuristic":
+        return HeuristicFilter(settings)
+    if reviewer == "none" or not settings.llm_enabled:
         return PassThroughFilter()
     return ClaudeSignalFilter(settings)

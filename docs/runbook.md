@@ -2,6 +2,12 @@
 
 Build in four stages and don't skip any. Each stage has an exit criterion.
 
+## Stage 0 - Learn the cockpit (local, no accounts)
+
+Follow "Run it on one machine" in the README: `thunderbot serve`, `thunderbot replay --speed 0.3`,
+and the dashboard. Try the kill switch, pause, a settings change and a Lab sweep. Watch the
+engine apply each change. Everything runs on synthetic data, so nothing here measures an edge.
+
 ## Stage 1 - Backtest (local)
 
 ```bash
@@ -20,6 +26,10 @@ thunderbot fetch-history --out data/groww --days 365 --interval 5
 thunderbot backtest --data data/groww --trades-csv trades.csv
 ```
 
+In the dashboard's **Strategy lab**, run walk-forward sweeps on real data (CSV or Groww). Only
+promote a configuration marked **robust**: profitable in-sample *and* on the unseen
+out-of-sample days, with at least 20 out-of-sample trades and a profit factor of 1.1 or more.
+
 Exit criterion: positive net P&L **after costs** across at least a year, profit factor > 1.2,
 max drawdown you can stomach, and no single month carrying the result. Most intraday variants fail
 here; that is the expected outcome, not a bug. Start recording your own minute bars now, since
@@ -29,16 +39,16 @@ Groww's intraday history depth is disputed (3 months vs. "from 2020").
 
 1. **VPS:** a small Linux VM in Mumbai (`ap-south-1` or equivalent) with a **static/elastic IP**.
 2. **Whitelist** that IP (and an optional backup) on groww.in/trade-api/api-keys.
-3. **Supabase:** create a project, then apply `supabase/migrations/20261016000000_init.sql`
-   (`supabase db push` or paste it into the SQL editor).
+3. **Supabase:** create a project, then apply both migrations in `supabase/migrations/`
+   (`supabase db push`, or paste them into the SQL editor in order).
 4. **Worker install:**
    ```bash
    sudo useradd --system --home /opt/thunderbot thunderbot
    sudo git clone <this repo> /opt/thunderbot && cd /opt/thunderbot
    sudo python3 -m venv venv && sudo venv/bin/pip install -e "worker[all]"
    sudo cp worker/.env.example /etc/thunderbot.env && sudo chmod 600 /etc/thunderbot.env  # fill it in
-   sudo cp worker/deploy/thunderbot.service /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now thunderbot
+   sudo cp worker/deploy/thunderbot.service worker/deploy/thunderbot-jobs.service /etc/systemd/system/
+   sudo systemctl daemon-reload && sudo systemctl enable --now thunderbot thunderbot-jobs
    journalctl -u thunderbot -f
    ```
 5. **Dashboard:** import `dashboard/` as a Vercel project (root directory `dashboard`) and set
