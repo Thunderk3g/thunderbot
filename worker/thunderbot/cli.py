@@ -375,8 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os
+
     args = build_parser().parse_args(argv)
-    load_dotenv()
+    load_dotenv(os.environ.get("TB_ENV_FILE", ".env"))
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return args.func(args, _settings())
