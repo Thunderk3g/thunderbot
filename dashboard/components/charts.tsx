@@ -11,6 +11,12 @@ export type Point = { time: string; value: number };
 
 const IST_OFFSET = 19_800; // lightweight-charts renders UTC; shift so the axis reads in exchange time
 
+function compactInr(p: number) {
+  const a = Math.abs(p);
+  const body = a >= 1e7 ? `${(a / 1e7).toFixed(1)}Cr` : a >= 1e5 ? `${(a / 1e5).toFixed(1)}L` : a >= 1e3 ? `${(a / 1e3).toFixed(a >= 1e4 ? 0 : 1)}k` : a.toFixed(0);
+  return `${p < 0 ? "−" : ""}₹${body}`;
+}
+
 function cssVar(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
@@ -57,18 +63,19 @@ function baseOptions(intraday: boolean) {
     autoSize: true,
     layout: {
       background: { type: ColorType.Solid, color: "transparent" },
-      textColor: cssVar("--muted"),
-      fontFamily: "system-ui, -apple-system, Segoe UI, sans-serif",
-      fontSize: 11,
+      textColor: cssVar("--ink-soft"),
+      fontFamily: getComputedStyle(document.body).fontFamily,
+      fontSize: 12,
       attributionLogo: false, // attribution is in the page footer instead
     },
-    grid: { vertLines: { visible: false }, horzLines: { color: cssVar("--grid") } },
+    grid: { vertLines: { visible: false }, horzLines: { color: cssVar("--rule") } },
     rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.15, bottom: 0.1 } },
     timeScale: { borderVisible: false, timeVisible: intraday, secondsVisible: false, fixLeftEdge: true, fixRightEdge: true },
     crosshair: {
-      vertLine: { color: cssVar("--axis"), width: 1 as const, style: 0, labelVisible: false },
-      horzLine: { color: cssVar("--axis"), width: 1 as const, style: 0, labelVisible: false },
+      vertLine: { color: cssVar("--rule-strong"), width: 1 as const, style: 0, labelVisible: false },
+      horzLine: { color: cssVar("--rule-strong"), width: 1 as const, style: 0, labelVisible: false },
     },
+    localization: { priceFormatter: (p: number) => compactInr(p) },
     handleScroll: false,
     handleScale: false,
   };
@@ -103,14 +110,14 @@ export function PnlCurve({ points, intraday = false, height = 220, label = "P&L"
 
   useEffect(() => {
     if (!ref.current) return;
-    const up = cssVar("--series-up"), down = cssVar("--series-down");
+    const up = cssVar("--gain"), down = cssVar("--loss");
     const chart = createChart(ref.current, baseOptions(intraday));
     const series = chart.addSeries(BaselineSeries, {
       baseValue: { type: "price", price: 0 },
       topLineColor: up, topFillColor1: withAlpha(up, 0.18), topFillColor2: withAlpha(up, 0.02),
       bottomLineColor: down, bottomFillColor1: withAlpha(down, 0.02), bottomFillColor2: withAlpha(down, 0.18),
       lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerRadius: 4,
-      crosshairMarkerBorderColor: cssVar("--surface"), crosshairMarkerBorderWidth: 2,
+      crosshairMarkerBorderColor: cssVar("--paper"), crosshairMarkerBorderWidth: 2,
     });
     const onMove = handler(series, ref.current);
     chart.subscribeCrosshairMove(onMove);
@@ -139,7 +146,9 @@ export function PnlBars({ points, height = 160 }: { points: Point[]; height?: nu
 
   useEffect(() => {
     if (!ref.current) return;
-    const chart = createChart(ref.current, baseOptions(false));
+    const opts = baseOptions(false);
+    // Thin bars (≤ ~24px) even when there are only a few days to show.
+    const chart = createChart(ref.current, { ...opts, timeScale: { ...opts.timeScale, maxBarSpacing: 30 } });
     const series = chart.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false, base: 0 });
     const onMove = handler(series, ref.current);
     chart.subscribeCrosshairMove(onMove);
@@ -151,7 +160,7 @@ export function PnlBars({ points, height = 160 }: { points: Point[]; height?: nu
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    const up = cssVar("--series-up"), down = cssVar("--series-down");
+    const up = cssVar("--gain"), down = cssVar("--loss");
     seriesRef.current.setData(dedupe(points.map((p) => ({ time: toTime(p.time, false), value: p.value, color: p.value >= 0 ? up : down }))));
     chartRef.current?.timeScale().fitContent();
   }, [points, theme]);

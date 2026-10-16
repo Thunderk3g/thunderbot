@@ -4,18 +4,12 @@ import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion, use
 import { X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-export const spring = { type: "spring" as const, stiffness: 420, damping: 34, mass: 0.8 };
-export const fadeUp = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -6 },
-  transition: { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const },
-};
+export const spring = { type: "spring" as const, stiffness: 420, damping: 36, mass: 0.8 };
 
-/** A number that springs to its new value. */
+/** A number that springs to its new value when data changes. */
 export function AnimatedNumber({ value, format, className }: { value: number; format: (n: number) => string; className?: string }) {
   const reduce = useReducedMotion();
-  const mv = useSpring(value, { stiffness: 140, damping: 24, mass: 0.6 });
+  const mv = useSpring(value, { stiffness: 140, damping: 26, mass: 0.6 });
   const text = useTransform(mv, (v) => format(v));
   useEffect(() => {
     if (reduce) mv.jump(value);
@@ -24,99 +18,105 @@ export function AnimatedNumber({ value, format, className }: { value: number; fo
   return <motion.span className={className}>{text}</motion.span>;
 }
 
-export function Card({ title, icon, action, children, className = "", delay = 0 }: {
-  title?: ReactNode; icon?: ReactNode; action?: ReactNode; children: ReactNode; className?: string; delay?: number;
-}) {
+/** A page section: a heading line and content, separated from neighbours by space, not a box. */
+export function Section({ title, aside, children, className = "" }: { title?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <motion.section className={`card ${className}`} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.35, delay, ease: [0.22, 1, 0.36, 1] }}>
-      {(title || action) && (
-        <div className="card-head">
-          <h2 className="card-title">{icon}{title}</h2>
-          {action}
+    <section className={`section ${className}`}>
+      {(title || aside) && (
+        <div className="section-head">
+          {title && <h2>{title}</h2>}
+          {aside}
         </div>
       )}
       {children}
-    </motion.section>
+    </section>
   );
 }
 
-export function Stat({ label, value, format, tone, foot }: {
-  label: string; value: number | null | undefined; format: (n: number) => string; tone?: "auto" | "none"; foot?: ReactNode;
-}) {
-  const cls = tone === "auto" && value ? (value > 0 ? "up" : "down") : "";
+/** A raised panel, used only around forms. */
+export function Panel({ title, aside, children }: { title?: ReactNode; aside?: ReactNode; children: ReactNode }) {
   return (
-    <motion.div className="stat" layout initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}>
-      <div className="label">{label}</div>
-      <div className={`value ${cls}`}>
-        {value === null || value === undefined ? "–" : <AnimatedNumber value={value} format={format} />}
-      </div>
-      {foot && <div className="foot">{foot}</div>}
-    </motion.div>
+    <div className="panel">
+      {(title || aside) && (
+        <div className="section-head" style={{ marginBottom: 14 }}>
+          {title && <h2 style={{ margin: 0 }}>{title}</h2>}
+          {aside}
+        </div>
+      )}
+      {children}
+    </div>
   );
 }
 
-export function Badge({ tone = "", children, title }: { tone?: "" | "blue" | "good" | "bad" | "warn" | "live"; children: ReactNode; title?: string }) {
-  return <span className={`badge ${tone}`} title={title}>{children}</span>;
+export function Figures({ items }: { items: { label: string; value: ReactNode; tone?: "gain" | "loss" | "" }[] }) {
+  return (
+    <dl className="figures">
+      {items.map((i) => (
+        <div className="figure" key={i.label}>
+          <dt>{i.label}</dt>
+          <dd className={i.tone ?? ""}>{i.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
-export function Pulse({ on }: { on: boolean }) {
+export function StatusDot({ on }: { on: boolean }) {
+  const reduce = useReducedMotion();
   return (
-    <span className={`dot ${on ? "on" : "off"}`} aria-label={on ? "online" : "offline"}>
-      {on && (
-        <motion.span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--good)" }}
-          animate={{ scale: [1, 2.4], opacity: [0.6, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }} />
+    <span className={`dot ${on ? "on" : "off"}`} aria-hidden>
+      {on && !reduce && (
+        <motion.span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--running)" }}
+          animate={{ scale: [1, 2.2], opacity: [0.5, 0] }} transition={{ duration: 2, repeat: Infinity, ease: "easeOut" }} />
       )}
     </span>
   );
 }
 
-export function Button({ children, variant = "", size = "", onClick, disabled, type = "button", title }: {
-  children: ReactNode; variant?: "" | "primary" | "danger" | "ghost"; size?: "" | "sm"; onClick?: () => void;
-  disabled?: boolean; type?: "button" | "submit"; title?: string;
+export function Button({ children, variant = "", size = "", onClick, disabled, type = "button", title, block }: {
+  children: ReactNode; variant?: "" | "primary" | "stop" | "quiet"; size?: "" | "sm"; onClick?: () => void;
+  disabled?: boolean; type?: "button" | "submit"; title?: string; block?: boolean;
 }) {
   return (
-    <motion.button type={type} className={`btn ${variant} ${size}`} onClick={onClick} disabled={disabled} title={title}
-      whileTap={disabled ? undefined : { scale: 0.96 }} whileHover={disabled ? undefined : { y: -1 }} transition={spring}>
+    <motion.button type={type} className={`btn ${variant} ${size} ${block ? "block" : ""}`} onClick={onClick} disabled={disabled} title={title}
+      whileTap={disabled ? undefined : { scale: 0.97 }} transition={spring}>
       {children}
     </motion.button>
   );
 }
 
-/** Press and hold to confirm. Used for the kill switch so it can't be hit by accident. */
-export function HoldButton({ children, onConfirm, duration = 1.1, variant = "danger" }: {
-  children: ReactNode; onConfirm: () => void; duration?: number; variant?: "danger" | "primary";
-}) {
+/** Press and hold to confirm, so the stop can't be hit by accident. */
+export function HoldButton({ children, onConfirm, duration = 1.1, block }: { children: ReactNode; onConfirm: () => void; duration?: number; block?: boolean }) {
   const progress = useMotionValue(0);
   const ctrl = useRef<ReturnType<typeof animate> | null>(null);
   const start = () => {
     ctrl.current?.stop();
-    ctrl.current = animate(progress, 1, { duration: duration * (1 - progress.get()), ease: "linear", onComplete: () => {
-      onConfirm();
-      progress.set(0);
-    } });
+    ctrl.current = animate(progress, 1, {
+      duration: duration * (1 - progress.get()), ease: "linear",
+      onComplete: () => { onConfirm(); progress.set(0); },
+    });
   };
   const cancel = () => {
     ctrl.current?.stop();
-    ctrl.current = animate(progress, 0, { duration: 0.25 });
+    ctrl.current = animate(progress, 0, { duration: 0.2 });
   };
   return (
-    <motion.button type="button" className={`btn ${variant} hold`} onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel}
+    <button type="button" className={`btn stop hold ${block ? "block" : ""}`} onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!e.repeat) start(); } }}
       onKeyUp={(e) => { if (e.key === "Enter" || e.key === " ") cancel(); }}
-      whileTap={{ scale: 0.97 }} title="Press and hold to confirm">
+      aria-label="Stop trading: press and hold">
       <motion.div className="hold-fill" style={{ scaleX: progress }} />
       <span>{children}</span>
-    </motion.button>
+    </button>
   );
 }
 
-export function Segmented<T extends string>({ options, value, onChange }: {
-  options: { value: T; label: ReactNode }[]; value: T; onChange: (v: T) => void;
+export function Segmented<T extends string>({ options, value, onChange, label }: {
+  options: { value: T; label: ReactNode }[]; value: T; onChange: (v: T) => void; label?: string;
 }) {
   const id = useId();
   return (
-    <div className="seg" role="group">
+    <div className="seg" role="group" aria-label={label}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={o.value === value} onClick={() => onChange(o.value)}>
           {o.value === value && <motion.div layoutId={`seg-${id}`} className="seg-pill" transition={spring} />}
@@ -147,15 +147,14 @@ export function SliderField({ label, value, min, max, step, onChange, suffix, hi
   };
   return (
     <div className="field">
-      <label><span>{label}</span>{hint && <span className="subtle">{hint}</span>}</label>
+      <label><span>{label}</span>{hint && <span className="hint">{hint}</span>}</label>
       <div className="slider-row">
-        <input type="range" min={min} max={max} step={step} value={value} aria-label={label}
-          onChange={(e) => onChange(Number(e.target.value))} />
+        <input type="range" min={min} max={max} step={step} value={value} aria-label={label} onChange={(e) => onChange(Number(e.target.value))} />
         <div style={{ position: "relative" }}>
-          <input className="input" inputMode="decimal" value={text} aria-label={`${label} value`}
+          <input className="input tnum" inputMode="decimal" value={text} aria-label={`${label} value`}
             onChange={(e) => setText(e.target.value)} onBlur={(e) => commit(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") commit((e.target as HTMLInputElement).value); }} />
-          {suffix && <span className="subtle" style={{ position: "absolute", right: 10, top: 9 }}>{suffix}</span>}
+          {suffix && <span className="hint" style={{ position: "absolute", right: 9, top: 8 }}>{suffix}</span>}
         </div>
       </div>
     </div>
@@ -173,14 +172,14 @@ export function ChipsInput({ values, onChange, placeholder }: { values: string[]
     <div className="chips">
       <AnimatePresence initial={false}>
         {values.map((v) => (
-          <motion.span key={v} className="chip" layout initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.8 }} transition={spring}>
+          <motion.span key={v} className="chip ticker" layout initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.85 }} transition={spring}>
             {v}
-            <button type="button" aria-label={`remove ${v}`} onClick={() => onChange(values.filter((x) => x !== v))}><X size={13} /></button>
+            <button type="button" aria-label={`Remove ${v}`} onClick={() => onChange(values.filter((x) => x !== v))}><X size={13} /></button>
           </motion.span>
         ))}
       </AnimatePresence>
-      <input value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)}
+      <input value={draft} placeholder={placeholder} aria-label="Add symbol" onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === "," || e.key === " ") { e.preventDefault(); add(draft); }
           if (e.key === "Backspace" && !draft && values.length) onChange(values.slice(0, -1));
@@ -193,19 +192,13 @@ export function ChipsInput({ values, onChange, placeholder }: { values: string[]
 export function Progress({ value }: { value: number }) {
   return (
     <div className="progress" role="progressbar" aria-valuenow={Math.round(value * 100)} aria-valuemin={0} aria-valuemax={100}>
-      <motion.div initial={{ width: 0 }} animate={{ width: `${Math.max(4, value * 100)}%` }} transition={{ type: "spring", stiffness: 120, damping: 20 }} />
+      <motion.div initial={{ width: 0 }} animate={{ width: `${Math.max(3, value * 100)}%` }} transition={{ type: "spring", stiffness: 120, damping: 22 }} />
     </div>
   );
 }
 
-export function Empty({ title, hint, icon }: { title: string; hint?: ReactNode; icon?: ReactNode }) {
-  return (
-    <motion.div className="empty" {...fadeUp}>
-      {icon && <div style={{ marginBottom: 8, opacity: 0.6 }}>{icon}</div>}
-      <div className="title">{title}</div>
-      {hint && <div>{hint}</div>}
-    </motion.div>
-  );
+export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+  return <div className="empty"><strong>{title}</strong>{children}</div>;
 }
 
 export function Skeleton({ height = 16, width = "100%" }: { height?: number; width?: number | string }) {

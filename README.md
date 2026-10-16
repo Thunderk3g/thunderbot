@@ -22,16 +22,17 @@ web cockpit. Built from the blueprint in [`docs/research-report.md`](docs/resear
 
 | Tab | What it does |
 |---|---|
-| **Live** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. Hold-to-kill switch in the header. |
-| **Performance** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |
-| **Strategy lab** | Backtests and **walk-forward sweeps** run on the worker with the live engine's own code. Sweeps rank parameter sets on the first 70% of history and show how each did on the unseen last 30%. Promote a configuration to the engine in one click; configs that didn't hold up out-of-sample need a second, deliberate click. |
+| **Today** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. Hold-to-kill switch in the header. |
+| **Results** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |
+| **Lab** | Backtests and **walk-forward sweeps** run on the worker with the live engine's own code. Sweeps rank parameter sets on the first 70% of history and show how each did on the unseen last 30%. Promote a configuration to the engine in one click; configs that didn't hold up out-of-sample need a second, deliberate click. |
 | **Settings** | Strategy and parameters, capital and risk limits, universe and timing, reviewer. The worker validates and clamps everything. Live trading, MTF, the static IP and credentials are locked to the VPS environment, so the dashboard can never switch them on. |
-| **Journal** | Every event and order state, filterable. |
+| **Log** | Every event and order state, filterable. |
 
-![Live tab during a replay: session P&L, an open position on its stop-to-target gauge, signals and session limits](docs/screenshots/live.png)
+![Today: the day's P&L as a condensed figure over a ribbon of the trading session, with positions, signals and set-up below](docs/screenshots/today.png)
 
-Minimal UI, light and dark themes, spring animations (open-source [Motion](https://motion.dev)),
-charts by TradingView's open-source [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
+Designed with Anthropic's open-source `frontend-design` skill (vendored in `.claude/skills/`); the plan and
+rationale are in [`docs/design.md`](docs/design.md). Archivo type, light and dark themes, animation by
+[Motion](https://motion.dev), charts by TradingView's [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
 
 ## Run it on one machine (no cloud, no broker account)
 

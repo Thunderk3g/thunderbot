@@ -1,17 +1,18 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Bot, ChartLine, Layers } from "lucide-react";
 import { useMemo, useState } from "react";
 import { inr, num, pct, signedInr } from "@/lib/format";
 import { dailySeries, groupBy, reviewerStats, tradeStats } from "@/lib/stats";
 import type { Outcome, Trade } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import { PnlBars, PnlCurve } from "./charts";
-import { Badge, Card, Empty, Segmented, Skeleton, Stat } from "./ui";
+import { Empty, Figures, Section, Segmented, Skeleton } from "./ui";
 
 type Perf = { mode: string; days: number; trades: Trade[]; outcomes: Outcome[]; anchor: string | null };
 type Mode = "paper" | "live" | "replay";
+const MODE_NOUN: Record<Mode, string> = { paper: "Paper trading", live: "Live trading", replay: "Replays" };
+const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
 
 export default function PerformanceView({ defaultMode }: { defaultMode: Mode }) {
   const [mode, setMode] = useState<Mode>(defaultMode);
@@ -25,47 +26,56 @@ export default function PerformanceView({ defaultMode }: { defaultMode: Mode }) 
   const bySymbol = useMemo(() => groupBy(data?.trades ?? [], "symbol"), [data]);
 
   return (
-    <div className="grid">
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
-        <Segmented<Mode> value={mode} onChange={setMode} options={[
-          { value: "paper", label: "Paper" }, { value: "live", label: "Live" }, { value: "replay", label: "Replay" },
-        ]} />
-        <Segmented value={days} onChange={setDays} options={[
-          { value: "30", label: "30d" }, { value: "90", label: "90d" }, { value: "365", label: "1y" }, { value: "3650", label: "All" },
-        ]} />
+    <div className="page">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+        <h1>Results</h1>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Segmented<Mode> label="Trading mode" value={mode} onChange={setMode} options={[
+            { value: "paper", label: "Paper" }, { value: "live", label: "Live" }, { value: "replay", label: "Replay" },
+          ]} />
+          <Segmented label="Period" value={days} onChange={setDays} options={[
+            { value: "30", label: "30 days" }, { value: "90", label: "90 days" }, { value: "365", label: "1 year" }, { value: "3650", label: "All" },
+          ]} />
+        </div>
       </div>
 
-      {error && <div className="banner bad">{error}</div>}
-      {!data ? <div className="card"><Skeleton height={260} /></div> : !data.trades.length ? (
-        <div className="card"><Empty icon={<ChartLine size={28} />} title={`No ${mode} trades yet`}
-          hint={mode === "live" ? "Live results appear after the engine trades real money." : "Run the engine (or a replay) and results build up here."} /></div>
+      {error && <div className="notice stop"><span className="grow">{error}</span></div>}
+      {!data ? <Skeleton height={300} /> : !data.trades.length ? (
+        <Empty title={`No ${mode} trades yet.`}>
+          {mode === "live" ? "Live results appear once the engine trades real money." : "Run the engine or a replay and results build up here."}
+        </Empty>
       ) : (
         <>
-          <div className="stats">
-            <Stat label="Net P&L" value={stats.net} format={signedInr} tone="auto" foot={`after ${inr(stats.costs)} costs`} />
-            <Stat label="Trades" value={stats.trades} format={(n) => num(n, 0)} foot={`${daily.length} days`} />
-            <Stat label="Win rate" value={stats.winRate} format={(n) => pct(n)} />
-            <Stat label="Profit factor" value={stats.profitFactor} format={(n) => num(n)} foot="gross wins / gross losses" />
-            <Stat label="Expectancy" value={stats.expectancy} format={signedInr} tone="auto" foot="per trade" />
-            <Stat label="Max drawdown" value={stats.maxDrawdown ? -stats.maxDrawdown : 0} format={signedInr} tone="auto" />
-          </div>
+          <section>
+            <p className="hero-line" style={{ marginTop: 0, fontSize: 22, color: "var(--ink)", maxWidth: "48ch" }}>
+              {MODE_NOUN[mode]} {stats.net >= 0 ? "made" : "lost"} <strong className={tone(stats.net)}>{inr(Math.abs(stats.net))}</strong> over{" "}
+              {daily.length} trading {daily.length === 1 ? "day" : "days"}, after {inr(stats.costs)} in costs.
+            </p>
+            <div style={{ marginTop: 24 }}>
+              <Figures items={[
+                { label: "Trades", value: num(stats.trades, 0) },
+                { label: "Won", value: pct(stats.winRate, 0) },
+                { label: "Profit factor", value: num(stats.profitFactor) },
+                { label: "Average trade", value: signedInr(stats.expectancy), tone: tone(stats.expectancy) },
+                { label: "Worst drawdown", value: stats.maxDrawdown ? signedInr(-stats.maxDrawdown) : "none", tone: stats.maxDrawdown ? "loss" : "" },
+              ]} />
+            </div>
+          </section>
 
-          <Card title="Cumulative P&L" icon={<ChartLine size={15} />}
-            action={<span className="subtle">{data.anchor ? `through ${data.anchor.slice(0, 10)}` : ""}</span>}>
-            <PnlCurve points={daily.map((d) => ({ time: d.day, value: d.equity }))} height={260} label="cumulative" />
-          </Card>
+          <Section title="Running total" aside={<p>Net P&amp;L by day{data.anchor ? `, through ${data.anchor.slice(0, 10)}` : ""}</p>}>
+            <PnlCurve points={daily.map((d) => ({ time: d.day, value: d.equity }))} height={260} label="total" />
+          </Section>
 
-          <div className="grid cols-2">
-            <Card title="Daily P&L" icon={<ChartLine size={15} />}
-              action={<div className="legend"><span><i style={{ background: "var(--series-up)" }} />gain</span><span><i style={{ background: "var(--series-down)" }} />loss</span></div>}>
+          <div className="split even">
+            <Section title="Each day" aside={<div className="legend"><span><i style={{ background: "var(--gain)" }} />gain</span><span><i style={{ background: "var(--loss)" }} />loss</span></div>}>
               <PnlBars points={daily.map((d) => ({ time: d.day, value: d.pnl }))} height={200} />
-            </Card>
-            <ReviewerCard stats={reviewer} />
+            </Section>
+            <ReviewerSection stats={reviewer} />
           </div>
 
-          <div className="grid cols-2">
+          <div className="split even">
             <Breakdown title="By strategy" rows={byStrategy} />
-            <Breakdown title="By symbol" rows={bySymbol} />
+            <Breakdown title="By stock" rows={bySymbol} ticker />
           </div>
         </>
       )}
@@ -73,57 +83,57 @@ export default function PerformanceView({ defaultMode }: { defaultMode: Mode }) 
   );
 }
 
-function ReviewerCard({ stats }: { stats: ReturnType<typeof reviewerStats> }) {
+function ReviewerSection({ stats }: { stats: ReturnType<typeof reviewerStats> }) {
   const approve = stats.find((s) => s.decision === "approve");
   const reject = stats.find((s) => s.decision === "reject");
   const enough = (approve?.n ?? 0) >= 30 && (reject?.n ?? 0) >= 15;
-  const helping = approve && reject && approve.avgR > reject.avgR;
+  const helping = !!approve && !!reject && approve.avgR > reject.avgR;
   const maxAbs = Math.max(0.5, ...stats.map((s) => Math.abs(s.avgR)));
+  const name: Record<string, string> = { approve: "Approved", reject: "Vetoed", none: "Not reviewed" };
   return (
-    <Card title="Is the reviewer earning its keep?" icon={<Bot size={15} />}>
-      {!stats.length ? <Empty title="No reviewed signals yet" hint="Every signal is tracked to its stop or target, traded or not, so vetoes can be scored." /> : (
+    <Section title="Is the reviewer worth it?" aside={<p>Average result per idea, in multiples of risk</p>}>
+      {!stats.length ? <Empty title="Nothing to compare yet.">Every signal is followed to its stop or target, traded or not, so vetoes can be judged.</Empty> : (
         <>
-          <div className="list">
+          <div className="compare">
             {stats.map((s, i) => (
-              <div key={s.decision} className="row" style={{ display: "grid", gridTemplateColumns: "92px 1fr 70px", gap: 10 }}>
-                <span style={{ fontWeight: 600 }}>{s.decision === "none" ? "unreviewed" : s.decision === "approve" ? "approved" : "vetoed"}</span>
-                <div style={{ position: "relative", height: 14 }}>
-                  <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "var(--axis)" }} />
-                  <motion.div initial={{ width: 0 }} animate={{ width: `${(Math.abs(s.avgR) / maxAbs) * 50}%` }} transition={{ delay: i * 0.08, type: "spring", stiffness: 120, damping: 18 }}
-                    style={{ position: "absolute", top: 2, height: 10, borderRadius: s.avgR >= 0 ? "0 4px 4px 0" : "4px 0 0 4px",
-                      left: s.avgR >= 0 ? "50%" : undefined, right: s.avgR < 0 ? "50%" : undefined,
-                      background: s.avgR >= 0 ? "var(--series-up)" : "var(--series-down)" }} />
-                </div>
-                <span className={s.avgR >= 0 ? "up" : "down"} style={{ textAlign: "right", fontWeight: 600 }}>{s.avgR >= 0 ? "+" : ""}{s.avgR.toFixed(2)}R</span>
-                <span className="subtle" style={{ gridColumn: "1 / -1" }}>{s.n} signals · {s.hitRate.toFixed(0)}% ended positive</span>
+              <div key={s.decision} style={{ display: "contents" }}>
+                <span>{name[s.decision]}</span>
+                <span className="bar">
+                  <span className="axis" />
+                  <motion.span initial={{ width: 0 }} animate={{ width: `${(Math.abs(s.avgR) / maxAbs) * 50}%` }} transition={{ delay: i * 0.06, type: "spring", stiffness: 120, damping: 20 }}
+                    style={{ position: "absolute", top: 0, height: 10, left: s.avgR >= 0 ? "50%" : undefined, right: s.avgR < 0 ? "50%" : undefined,
+                      borderRadius: s.avgR >= 0 ? "0 3px 3px 0" : "3px 0 0 3px", background: s.avgR >= 0 ? "var(--gain)" : "var(--loss)" }} />
+                </span>
+                <span className={`tnum ${s.avgR >= 0 ? "gain" : "loss"}`} style={{ textAlign: "right", fontWeight: 600 }}>{Math.abs(s.avgR) < 0.005 ? "0.00" : `${s.avgR > 0 ? "+" : ""}${s.avgR.toFixed(2)}`}R</span>
+                <span className="soft small" style={{ gridColumn: "2 / -1", marginTop: -4, marginBottom: 6 }}>{s.n} ideas, {s.hitRate.toFixed(0)}% ended in profit</span>
               </div>
             ))}
           </div>
-          <div className="note" style={{ marginTop: 12 }}>
-            {!enough ? "Not enough reviewed signals to judge yet (want 30+ approved and 15+ vetoed)."
-              : helping ? <>Vetoed signals averaged {reject!.avgR.toFixed(2)}R vs {approve!.avgR.toFixed(2)}R for approved ones, so the reviewer is filtering out worse trades. <Badge tone="good">helping</Badge></>
-              : <>Vetoed signals did as well as or better than approved ones. The reviewer isn&apos;t adding value; consider turning it off. <Badge tone="bad">not helping</Badge></>}
-          </div>
+          <p className="small" style={{ marginTop: 12, maxWidth: "60ch" }}>
+            {!enough ? "Too few reviewed ideas to judge yet. Wait for 30 approved and 15 vetoed."
+              : helping ? `Yes, so far. Vetoed ideas averaged ${reject!.avgR.toFixed(2)}R against ${approve!.avgR.toFixed(2)}R for approved ones.`
+              : "No. Vetoed ideas did as well as approved ones, so the reviewer is costing money without filtering anything. Consider turning it off in Settings."}
+          </p>
         </>
       )}
-    </Card>
+    </Section>
   );
 }
 
-function Breakdown({ title, rows }: { title: string; rows: ReturnType<typeof groupBy> }) {
+function Breakdown({ title, rows, ticker }: { title: string; rows: ReturnType<typeof groupBy>; ticker?: boolean }) {
   return (
-    <Card title={title} icon={<Layers size={15} />}>
+    <Section title={title}>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>{title.replace("By ", "")}</th><th className="num">Trades</th><th className="num">Win rate</th><th className="num">Net</th></tr></thead>
+          <thead><tr><th>{ticker ? "Stock" : "Strategy"}</th><th className="num">Trades</th><th className="num">Won</th><th className="num">Net</th></tr></thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.key}><td>{r.key}</td><td className="num">{r.trades}</td><td className="num">{pct(r.winRate, 0)}</td>
-                <td className={`num ${r.net >= 0 ? "up" : "down"}`}>{signedInr(r.net)}</td></tr>
+              <tr key={r.key}><td className={ticker ? "ticker" : ""}>{r.key}</td><td className="num">{r.trades}</td><td className="num">{pct(r.winRate, 0)}</td>
+                <td className={`num ${r.net >= 0 ? "gain" : "loss"}`}>{signedInr(r.net)}</td></tr>
             ))}
           </tbody>
         </table>
       </div>
-    </Card>
+    </Section>
   );
 }
