@@ -79,6 +79,7 @@ tiny live, scale) and [`docs/architecture.md`](docs/architecture.md) for the des
 | `thunderbot backtest --data DIR` | CLI backtest over CSV candles |
 | `thunderbot fetch-history` | Download candles from Groww, paginated per Groww's window limits |
 | `thunderbot kill` / `pause` / `resume` / `confirm-login` | Control plane (also in the dashboard) |
+| `thunderbot login-check` | Read-only Groww credential check (login, profile, data plan); never trades |
 | `thunderbot check-ip` | Verify the public IP is the whitelisted static IP |
 
 Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=true`, a
@@ -88,7 +89,7 @@ Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=t
 
 ```
 worker/      Python engine: strategies, reviewer, risk, Groww + paper brokers, backtester,
-             replay, jobs, local API, CLI. 88 tests.
+             replay, jobs, local API, CLI. 94 tests.
 dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
 supabase/    Postgres schema migrations
 docs/        research report, architecture, runbook

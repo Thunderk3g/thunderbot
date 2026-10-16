@@ -8,6 +8,25 @@ Follow "Run it on one machine" in the README: `thunderbot serve`, `thunderbot re
 and the dashboard. Try the kill switch, pause, a settings change and a Lab sweep. Watch the
 engine apply each change. Everything runs on synthetic data, so nothing here measures an edge.
 
+## Connect your Groww account
+
+1. On groww.in/trade-api/api-keys create a **TOTP** key. You get two things: the **API key** (a long
+   `eyJ...` token) and a **TOTP secret** (base32: capital letters A-Z and digits 2-7, the text
+   under the QR code). Thunderbot needs both.
+2. Put them in `worker/.env` locally (gitignored, loaded automatically) or `/etc/thunderbot.env`
+   on the VPS (`chmod 600`). Never commit them or paste them into chats or tickets.
+   ```
+   GROWW_API_KEY=eyJ...
+   GROWW_TOTP_SECRET=ABCDEFGHIJKLMNOP
+   ```
+3. Run `thunderbot login-check`. It logs in, fetches your profile, and probes the live-data plan.
+   It never places orders and prints neither the token nor account details. It tells you plainly
+   if the secret isn't a TOTP secret or the key type doesn't match.
+4. For orders, also whitelist the VPS's static IP on the same page and set `TB_EXPECTED_STATIC_IP`.
+
+If a key or secret is ever exposed, delete it on the API keys page and create a new one. TOTP
+keys don't expire on their own.
+
 ## Stage 1 - Backtest (local)
 
 ```bash

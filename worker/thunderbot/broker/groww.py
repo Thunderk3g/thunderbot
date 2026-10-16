@@ -14,8 +14,10 @@ spellings and fail loudly on anything else, never silently.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,25 @@ def _first(d: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
+def key_role(api_key: str) -> str | None:
+    """The key type embedded in a Groww API key (a JWT): ``auth-totp`` or an approval-type role.
+
+    Decoded locally without verifying the signature, only to give clear setup errors.
+    """
+    try:
+        payload = api_key.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        sub = claims.get("sub")
+        sub = json.loads(sub) if isinstance(sub, str) else (sub or {})
+        return sub.get("role")
+    except Exception:
+        return None
+
+
+def is_base32(secret: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z2-7]+=*", secret.replace(" ", "").upper()))
+
+
 class GrowwSession:
     """Obtains and caches the daily Groww access token.
 
@@ -80,6 +101,18 @@ class GrowwSession:
             raise BrokerError("GROWW_API_KEY is required")
         if not (totp_secret or api_secret):
             raise BrokerError("set GROWW_TOTP_SECRET (TOTP flow) or GROWW_API_SECRET (daily-approval flow)")
+        role = key_role(api_key)
+        if role == "auth-totp":
+            if not totp_secret:
+                raise BrokerError(
+                    "GROWW_API_KEY is a TOTP-type key, so GROWW_TOTP_SECRET is required "
+                    "(the base32 secret shown with the QR code when the key was created)")
+            if not is_base32(totp_secret):
+                raise BrokerError(
+                    "GROWW_TOTP_SECRET is not a valid TOTP secret: TOTP secrets are base32 (letters A-Z and "
+                    "digits 2-7, like the text under the QR code). The value set looks like an API secret; "
+                    "regenerate the TOTP key on groww.in/trade-api/api-keys and copy the TOTP secret")
+            api_secret = None  # TOTP keys log in with codes only
         self.api_key = api_key
         self.totp_secret = totp_secret
         self.api_secret = api_secret
@@ -109,7 +142,8 @@ class GrowwSession:
         if self.totp_secret:
             import pyotp
 
-            token = GrowwAPI.get_access_token(api_key=self.api_key, totp=pyotp.TOTP(self.totp_secret).now())
+            code = pyotp.TOTP(self.totp_secret.replace(" ", "").upper()).now()
+            token = GrowwAPI.get_access_token(api_key=self.api_key, totp=code)
         else:
             token = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.api_secret)
         if self.cache_path:

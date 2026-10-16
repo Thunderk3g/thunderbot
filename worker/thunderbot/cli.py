@@ -21,6 +21,29 @@ from .strategy import Strategy, build_strategy
 log = logging.getLogger("thunderbot")
 
 
+def load_dotenv(path: str | Path = ".env") -> list[str]:
+    """Load KEY=VALUE lines from a local .env (gitignored) without overriding the real environment."""
+    import os
+
+    p = Path(path)
+    if not p.is_file():
+        return []
+    loaded = []
+    for raw in p.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 def _settings() -> Settings:
     s = Settings.from_env()
     for w in s.warnings:
@@ -242,6 +265,42 @@ def cmd_control(args, s: Settings) -> int:
     return 0
 
 
+def cmd_login_check(args, s: Settings) -> int:
+    """Read-only Groww check: log in, fetch the profile, and probe the live-data plan. Never places orders."""
+    from .broker.base import BrokerError
+    from .broker.groww import key_role
+
+    if not s.groww_api_key:
+        print("GROWW_API_KEY is not set (put it in worker/.env or /etc/thunderbot.env).", file=sys.stderr)
+        return 2
+    print(f"API key type: {key_role(s.groww_api_key) or 'unknown'}")
+    try:
+        session = _groww_session(s)
+        token, fresh = session.token(force_refresh=args.fresh)
+    except BrokerError as e:
+        print(f"Setup problem: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"Login failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    print(f"Login OK ({'new token' if fresh else 'cached token'}; token not shown).")
+    from growwapi import GrowwAPI
+
+    client = GrowwAPI(token)
+    try:
+        client.get_user_profile()
+        print("Profile: OK")
+    except Exception as e:
+        print(f"Profile: failed ({type(e).__name__}: {e})")
+    try:
+        ltp = client.get_ltp(exchange_trading_symbols=("NSE_RELIANCE",), segment="CASH")
+        print(f"Live data: OK (RELIANCE LTP {ltp.get('NSE_RELIANCE')})")
+    except Exception as e:
+        print(f"Live data: unavailable ({type(e).__name__}: {e}). The Live Data API needs a paid Trade API plan.")
+    print("No orders were placed. Orders additionally require this host's IP to be whitelisted on Groww.")
+    return 0
+
+
 def cmd_check_ip(args, s: Settings) -> int:
     from .compliance import check_static_ip
 
@@ -309,11 +368,15 @@ def build_parser() -> argparse.ArgumentParser:
                         ("confirm-login", "confirm today's broker login (daily 2FA policy)")):
         sub.add_parser(name, help=help_).set_defaults(func=cmd_control)
     sub.add_parser("check-ip", help="verify this host's public IP is the whitelisted static IP").set_defaults(func=cmd_check_ip)
+    lc = sub.add_parser("login-check", help="read-only Groww credential check (login, profile, data plan); never trades")
+    lc.add_argument("--fresh", action="store_true", help="ignore the cached token (uses 1 of 150 daily token requests)")
+    lc.set_defaults(func=cmd_login_check)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    load_dotenv()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return args.func(args, _settings())
