@@ -104,6 +104,19 @@ contract notes.
 
 Raise `TB_CAPITAL` gradually. Keep `TB_MAX_LEVERAGE=1` until you have a long live record.
 
+## Starting and stopping
+
+The worker service runs all the time but trades only after you press **Start paper trading** on
+the dashboard (or run `thunderbot start`). **Hold to stop** (or `thunderbot stop`) closes every
+open position and takes no new trades; the worker keeps running and waits for the next Start.
+Start and stop survive restarts, since they live in the control table.
+
+Paper trading uses live Groww prices (LTP every few seconds, 5-minute candles from Groww's
+historical API) and simulates only the orders, so it needs a working Groww login and the
+Live Data plan. If the login fails, the worker stays up and the dashboard shows why
+("Groww not connected"). It retries at most every 5 minutes, because Groww allows only 150
+token requests a day. Fix the credentials in `/etc/thunderbot.env` and restart the service.
+
 ## Daily operations
 
 | Time (IST) | What happens |
@@ -118,7 +131,7 @@ Raise `TB_CAPITAL` gradually. Keep `TB_MAX_LEVERAGE=1` until you have a long liv
 
 | Situation | Action |
 |---|---|
-| Something looks wrong | Dashboard **Kill switch** (or `thunderbot kill`): flattens all managed positions, blocks entries. |
+| Something looks wrong | Dashboard **Hold to stop** (or `thunderbot stop`, or `thunderbot kill`): flattens all managed positions, blocks entries. |
 | Want to stop new trades but keep exits running | Dashboard **Pause new entries** (or `thunderbot pause`). |
 | `exit_failed` event | The engine could not close a position after 3 attempts. **Close it manually in the Groww app now.** |
 | `stop_failed` event | Protective stop rejected; the engine tried to exit immediately. Check the position in the app. |
@@ -127,4 +140,4 @@ Raise `TB_CAPITAL` gradually. Keep `TB_MAX_LEVERAGE=1` until you have a long liv
 | IP changed | Live mode refuses to start. Fix the VPS IP or update the whitelist (some brokers allow changes only weekly). |
 | Repeated errors | After 5 consecutive failed ticks, the engine engages the kill switch itself and tries to flatten. |
 
-To resume after a kill: `thunderbot resume` or **Release kill switch** on the dashboard.
+To trade again after a stop or a kill: **Start** on the dashboard or `thunderbot start` (this also clears the kill switch and pause).

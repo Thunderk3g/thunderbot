@@ -18,6 +18,8 @@ import base64
 import json
 import logging
 import re
+import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -151,6 +153,75 @@ class GrowwSession:
             self.cache_path.write_text(json.dumps({"token": token, "issued_at": now.isoformat()}))
             self.cache_path.chmod(0o600)
         return token, True
+
+
+
+class GrowwLink:
+    """A Groww client that connects on demand, so a login problem is reported instead of crashing the worker.
+
+    Use it wherever a ``GrowwAPI`` client is expected: SDK calls pass through to the connected client and
+    raise ``BrokerError`` while disconnected. ``ensure()`` (re)connects and swaps in a fresh token after the
+    6 AM expiry. Token requests are capped at 150 a day, so a failed login is retried at most every
+    ``retry_seconds``.
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], GrowwSession],
+        on_fresh_token: Callable[[], None] | None = None,
+        retry_seconds: float = 300.0,
+        client_factory: Callable[[str], Any] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._session_factory = session_factory
+        self._session: GrowwSession | None = None
+        self._on_fresh = on_fresh_token
+        self._retry = retry_seconds
+        self._client_factory = client_factory
+        self._monotonic = monotonic
+        self._next_try = 0.0
+        self.client: Any = None
+        self.error: str | None = None
+
+    def _new_client(self, token: str) -> Any:
+        if self._client_factory is not None:
+            return self._client_factory(token)
+        from growwapi import GrowwAPI
+
+        return GrowwAPI(token)
+
+    def ensure(self) -> str | None:
+        """Connect if needed. Returns None when usable, else a message saying what is wrong."""
+        if self.client is None and self._monotonic() < self._next_try:
+            return self.error
+        try:
+            if self._session is None:
+                self._session = self._session_factory()
+            token, fresh = self._session.token()
+            if self.client is None:
+                self.client = self._new_client(token)
+            elif getattr(self.client, "token", token) != token:
+                self.client.token = token
+            if fresh and self._on_fresh:
+                self._on_fresh()
+            self.error = None
+        except Exception as e:
+            self.client = None
+            self.error = f"Groww login failed: {e}"
+            self._next_try = self._monotonic() + self._retry
+            log.warning(self.error)
+        return self.error
+
+    def status(self) -> dict[str, Any]:
+        ok = self.client is not None and self.error is None
+        return {"source": "groww", "ok": ok, "message": "connected" if ok else (self.error or "not connected yet")}
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if self.client is None:
+            raise BrokerError(self.error or "Groww is not connected")
+        return getattr(self.client, name)
 
 
 class GrowwBroker:

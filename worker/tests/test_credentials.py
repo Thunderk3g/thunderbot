@@ -58,3 +58,57 @@ def test_dotenv_loads_without_overriding(tmp_path, monkeypatch):
     assert os.environ["TB_FAKE_C"] == "from-env" and "TB_FAKE_C" not in loaded
     for k in loaded:
         monkeypatch.delenv(k)
+
+
+class TestGrowwLink:
+    class Session:
+        def __init__(self, tokens):
+            self.tokens = tokens
+
+        def token(self):
+            t = self.tokens.pop(0)
+            if isinstance(t, Exception):
+                raise t
+            return t
+
+    class Client:
+        def __init__(self, token):
+            self.token = token
+
+        def get_ltp(self, **kw):
+            return {"NSE_AAA": 1.0}
+
+    def test_connects_lazily_and_swaps_tokens(self):
+        from thunderbot.broker.groww import GrowwLink
+
+        session = self.Session([("t1", True), ("t1", False), ("t2", True)])
+        fresh = []
+        link = GrowwLink(lambda: session, on_fresh_token=lambda: fresh.append(1), client_factory=self.Client)
+        assert link.status()["ok"] is False
+        assert link.ensure() is None and link.client.token == "t1"
+        assert link.get_ltp() == {"NSE_AAA": 1.0}
+        link.ensure()
+        link.ensure()
+        assert link.client.token == "t2" and len(fresh) == 2
+        assert link.status() == {"source": "groww", "ok": True, "message": "connected"}
+
+    def test_login_failure_is_reported_and_retried_after_backoff(self):
+        from thunderbot.broker.base import BrokerError
+        from thunderbot.broker.groww import GrowwLink
+
+        clock = [0.0]
+        attempts = []
+
+        def factory():
+            attempts.append(1)
+            raise BrokerError("GROWW_TOTP_SECRET is not a valid TOTP secret")
+
+        link = GrowwLink(factory, retry_seconds=300, client_factory=self.Client, monotonic=lambda: clock[0])
+        assert "not a valid TOTP secret" in link.ensure()
+        assert link.ensure() and len(attempts) == 1  # inside the backoff window: no new attempt
+        with pytest.raises(BrokerError):
+            link.get_ltp()
+        clock[0] = 301
+        link.ensure()
+        assert len(attempts) == 2
+        assert link.status()["ok"] is False and "TOTP" in link.status()["message"]

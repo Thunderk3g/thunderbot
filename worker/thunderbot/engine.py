@@ -17,7 +17,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Protocol
 
@@ -48,6 +48,7 @@ from .strategy.base import Strategy
 log = logging.getLogger(__name__)
 
 TICK = 0.05  # multiples of 0.05 are valid on every NSE equity tick-size band
+SCAN_RETRY_SECONDS = 90  # how long after a bar closes to keep waiting for its candle
 
 
 def round_tick(price: float, up: bool) -> float:
@@ -65,8 +66,13 @@ class EngineState:
     day: date | None = None
     last_bar: datetime | None = None
     kill_handled: bool = False
+    stop_handled: bool = False
     login_wait_logged: bool = False
     consecutive_errors: int = 0
+    feed_problem: str | None = None
+    # Symbols still to scan for the current bar. A symbol stays pending until its data source has
+    # the just-closed candle (live APIs can lag the bar close by a few seconds).
+    pending_scan: set[str] = field(default_factory=set)
 
 
 class TradingEngine:
@@ -86,8 +92,10 @@ class TradingEngine:
         costs: CostModel | None = None,
         now_fn: Callable[[], datetime] = now_ist,
         sleep_fn: Callable[[float], None] = time.sleep,
-        before_market_tick: Callable[[datetime], None] | None = None,
+        before_market_tick: Callable[[datetime], str | None] | None = None,
         require_login_confirmation: bool = False,
+        require_start: bool = False,
+        feed_status: Callable[[], dict] | None = None,
         filter_factory: Callable[[Settings], SignalFilter] | None = None,
         equity_interval_seconds: float = 60.0,
     ) -> None:
@@ -104,8 +112,13 @@ class TradingEngine:
         self.costs = costs or CostModel()
         self.now = now_fn
         self.sleep = sleep_fn
-        # Called on every market-hours tick, e.g. to swap in a fresh broker token after the 6 AM expiry.
+        # Called on every market-hours tick that needs the broker, e.g. to (re)connect or swap in a fresh
+        # token after the 6 AM expiry. Returning a message means "broker unavailable": the tick is skipped.
         self.before_market_tick = before_market_tick
+        # Paper/live runs start stopped and only trade after "start" from the dashboard or CLI
+        # (control key trading_enabled). Replays and tests trade straight away.
+        self.require_start = require_start
+        self.feed_status = feed_status
         # Daily 2FA policy: no new entries until an operator confirms today's login.
         self.require_login_confirmation = require_login_confirmation
         self.risk = RiskManager(settings, self.clock)
@@ -185,6 +198,7 @@ class TradingEngine:
                 "opened_at": p.opened_at.isoformat(), "product": p.product.value,
             })
         unrealized = self._unrealized()
+        running = not control.get("kill_switch") and (not self.require_start or bool(control.get("trading_enabled")))
         self.store.set_control("heartbeat", {
             "at": now.isoformat(), "wall_at": now_ist().isoformat(), "mode": self.mode, "strategy": self.s.strategy,
             "open_positions": len(self.positions), "positions": positions,
@@ -192,7 +206,8 @@ class TradingEngine:
             "trades_today": self.risk.state.trades_opened, "halted": self.risk.state.halted,
             "halt_reason": self.risk.state.halt_reason, "market_open": self.clock.is_market_open(now),
             "capital": self.s.capital, "llm_enabled": self.filter.enabled,
-            "reviewer": getattr(self.filter, "label", "none"),
+            "reviewer": getattr(self.filter, "label", "none"), "trading": "running" if running else "stopped",
+            "feed": self.feed_status() if self.feed_status else None,
         })
         if self.clock.is_market_open(now) and (
             self._last_equity_at is None or now - self._last_equity_at >= self.equity_interval
@@ -232,10 +247,28 @@ class TradingEngine:
     def _tick(self, now: datetime, control: dict) -> None:
         kill = bool(control.get("kill_switch"))
         paused = bool(control.get("paused"))
+        stopped = self.require_start and not control.get("trading_enabled")
+        if stopped and not self.state.stop_handled:
+            if self.positions:
+                self.store.event("trading_stopped", "trading stopped; closing open positions")
+            self.state.stop_handled = True
+        elif not stopped:
+            self.state.stop_handled = False
         if not self.clock.is_market_open(now):
             return
+        if (stopped or kill) and not self.positions and not self._shadows:
+            self.state.pending_scan.clear()
+            return  # nothing to manage, so no broker calls while stopped
         if self.before_market_tick is not None:
-            self.before_market_tick(now)
+            problem = self.before_market_tick(now)
+            if problem:
+                if problem != self.state.feed_problem:
+                    self.store.event("feed_error", problem)
+                    self.state.feed_problem = problem
+                return
+            if self.state.feed_problem:
+                self.store.event("feed_ok", "broker connection restored")
+                self.state.feed_problem = None
 
         symbols = sorted(set(self.s.symbols) | set(self.positions))
         prices = self.quotes.ltp(symbols)
@@ -260,7 +293,8 @@ class TradingEngine:
 
         # Flatten conditions are re-checked every tick, so a failed exit is retried until the book is flat.
         eod = self.clock.should_flatten(now)
-        reason = "eod_flatten" if eod else "kill_switch" if kill else "daily_loss_halt" if self.risk.state.halted else None
+        reason = ("eod_flatten" if eod else "kill_switch" if kill else "stopped" if stopped
+                  else "daily_loss_halt" if self.risk.state.halted else None)
         if reason and self.positions:
             self.flatten_all(reason)
         if eod:
@@ -268,16 +302,23 @@ class TradingEngine:
             return
 
         bar_start = self.clock.last_completed_bar_start(now, self.s.interval_minutes)
-        if bar_start is None or bar_start == self.state.last_bar:
+        if bar_start is None:
             return
-        self.state.last_bar = bar_start
-        if kill or paused or self.risk.state.halted:
+        if bar_start != self.state.last_bar:
+            self.state.last_bar = bar_start
+            self.state.pending_scan = set(self.s.symbols)
+        if not self.state.pending_scan:
+            return
+        bar_close = bar_start + timedelta(minutes=self.s.interval_minutes)
+        if kill or stopped or paused or self.risk.state.halted or (now - bar_close).total_seconds() > SCAN_RETRY_SECONDS:
+            self.state.pending_scan.clear()
             return
         if self.require_login_confirmation and control.get("login_confirmed_for") != now.date().isoformat():
             if not self.state.login_wait_logged:
                 self.store.event("login_confirmation_required",
                                  f"no new entries until today's login ({now.date()}) is confirmed")
                 self.state.login_wait_logged = True
+            self.state.pending_scan.clear()
             return
         self._scan_for_entries(now, bar_start)
 
@@ -310,12 +351,14 @@ class TradingEngine:
         return self._prior_bars[symbol]
 
     def _scan_for_entries(self, now: datetime, bar_start: datetime) -> None:
-        for symbol in self.s.symbols:
-            if symbol in self.positions:
+        for symbol in sorted(self.state.pending_scan):
+            if symbol in self.positions or symbol not in self.s.symbols:
+                self.state.pending_scan.discard(symbol)
                 continue
             bars = self._session_bars(symbol, now, bar_start)
             if not bars or bars[-1].ts != bar_start:
-                continue  # data not caught up yet; strategy only fires on the fresh bar
+                continue  # data not caught up yet; retried next tick (strategy only fires on the fresh bar)
+            self.state.pending_scan.discard(symbol)
             signal = self.strategy.on_bar(symbol, bars, self._prior(symbol, now))
             if signal is None:
                 continue

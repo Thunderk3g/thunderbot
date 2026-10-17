@@ -66,8 +66,9 @@ Next steps
        SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and NSE holidays in $APP/worker/deploy/nse_holidays.txt
   3. sudo -u thunderbot TB_ENV_FILE=$ENV_FILE $APP/venv/bin/thunderbot login-check
      sudo -u thunderbot TB_ENV_FILE=$ENV_FILE $APP/venv/bin/thunderbot check-ip
-  4. sudo systemctl enable --now thunderbot thunderbot-jobs     # starts in PAPER mode
+  4. sudo systemctl enable --now thunderbot thunderbot-jobs     # PAPER mode, waiting for Start
      journalctl -u thunderbot -f
+  5. Press "Start paper trading" on the dashboard. Paper trades use live Groww prices; orders are simulated.
 Live trading stays off until you set TB_LIVE_TRADING_ENABLED=true and change the unit to
 'thunderbot live --i-understand-the-risks' (see docs/runbook.md, Stage 3).
 EOF

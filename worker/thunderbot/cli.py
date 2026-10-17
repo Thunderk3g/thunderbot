@@ -129,31 +129,29 @@ def cmd_backtest(args, s: Settings) -> int:
 
 
 def _run_engine(s: Settings, mode: str) -> int:
-    from .broker.groww import GrowwBroker
+    from .broker.groww import GrowwBroker, GrowwLink
     from .broker.paper import PaperBroker
     from .engine import TradingEngine
     from .llm.filter import build_filter
     from .throttle import OrderThrottle
 
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
-    session = _groww_session(s)
-    client = _groww_client(s)
-
-    def refresh_token(now: datetime) -> None:
-        # Groww tokens expire at 6:00 AM IST; the session reuses its cached token until then.
-        token, fresh = session.token()
-        if token != client.token:
-            client.token = token
-            store.event("login", "Groww access token refreshed", at=now.isoformat(), fresh=fresh)
+    # The worker stays up even if the Groww login fails, and shows the reason on the dashboard.
+    # Paper mode still uses Groww for live prices and candles; only the orders are simulated.
+    link = GrowwLink(lambda: _groww_session(s),
+                     on_fresh_token=lambda: store.event("login", "new Groww access token issued"))
+    if problem := link.ensure():
+        store.event("feed_error", problem)
 
     throttle = OrderThrottle(s.orders_per_second, s.orders_per_minute)
-    groww = GrowwBroker(client, throttle, allow_mtf=s.allow_mtf_api, exchange=s.exchange)
+    groww = GrowwBroker(link, throttle, allow_mtf=s.allow_mtf_api, exchange=s.exchange)
     broker = groww if mode == "live" else PaperBroker(s.capital, s.slippage_bps)
     engine = TradingEngine(
-        settings=s, broker=broker, quotes=groww, data=GrowwMarketData(client, exchange=s.exchange),
+        settings=s, broker=broker, quotes=groww, data=GrowwMarketData(link, exchange=s.exchange),
         strategy=_strategy(s), signal_filter=build_filter(s), store=store, mode=mode,
-        before_market_tick=refresh_token, filter_factory=build_filter,
+        before_market_tick=lambda now: link.ensure(), filter_factory=build_filter,
         require_login_confirmation=(mode == "live" and s.require_login_confirmation),
+        require_start=True, feed_status=link.status,
     )
     engine.run_forever()
     return 0
@@ -247,7 +245,15 @@ def cmd_live(args, s: Settings) -> int:
 
 def cmd_control(args, s: Settings) -> int:
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
-    if args.command == "kill":
+    if args.command == "start":
+        store.set_control("kill_switch", False)
+        store.set_control("paused", False)
+        store.set_control("trading_enabled", True)
+        store.event("trading_started", "trading started from CLI")
+    elif args.command == "stop":
+        store.set_control("trading_enabled", False)
+        store.event("trading_stopped", "trading stopped from CLI")
+    elif args.command == "kill":
         store.set_control("kill_switch", True)
         store.event("kill_switch", "engaged from CLI")
     elif args.command == "resume":
@@ -362,7 +368,9 @@ def build_parser() -> argparse.ArgumentParser:
     lv.add_argument("--i-understand-the-risks", action="store_true")
     lv.set_defaults(func=cmd_live)
 
-    for name, help_ in (("kill", "engage kill switch: flatten and stop new entries"),
+    for name, help_ in (("start", "start trading (the paper/live worker waits for this)"),
+                        ("stop", "stop trading: close open positions and take no new trades"),
+                        ("kill", "engage kill switch: flatten and stop new entries"),
                         ("resume", "release kill switch and pause"),
                         ("pause", "stop new entries, keep managing open positions"),
                         ("confirm-login", "confirm today's broker login (daily 2FA policy)")):

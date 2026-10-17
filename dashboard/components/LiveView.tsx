@@ -24,6 +24,9 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
   const alive = !!hb?.wall_at && Date.now() - new Date(hb.wall_at).getTime() < 45_000;
   const todayIst = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const needLogin = hb?.mode === "live" && eff?.env_only.require_login_confirmation && control.login_confirmed_for !== todayIst;
+  const trading = !control.kill_switch && !!control.trading_enabled;
+  const feedDown = hb?.feed && !hb.feed.ok ? hb.feed.message : null;
+  const notStarted = hb && alive && hb.mode !== "replay" && !trading;
 
   const summary = !closed && !positions.length
     ? "Nothing traded yet today."
@@ -36,6 +39,20 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
     <div className="page">
       <div className="notices">
         <AnimatePresence initial={false}>
+          {feedDown && (
+            <Notice key="feed" kind="stop">
+              Groww isn&apos;t connected, so there are no live prices and nothing can trade. {feedDown}
+            </Notice>
+          )}
+          {notStarted && (
+            <Notice key="start" kind="info" action={<Button size="sm" variant="primary" onClick={() => act("start")}>Start {hb.mode === "live" ? "live" : "paper"} trading</Button>}>
+              {control.kill_switch ? "Trading was stopped and everything is flat." : "Not trading."}{" "}
+              {hb.mode === "live" ? "Live mode places real orders on Groww." : "Paper trading uses live Groww prices; the orders are simulated."}
+            </Notice>
+          )}
+          {trading && hb?.market_open === false && !feedDown && (
+            <Notice key="closed" kind="info">Started. The market is closed now, so the first trades can happen from 09:30 IST on the next trading day.</Notice>
+          )}
           {hb?.halted && <Notice key="halt" kind="stop">Halted for the day: {hb.halt_reason ?? "daily loss limit reached"}. It resumes tomorrow.</Notice>}
           {control.paused && !control.kill_switch && (
             <Notice key="pause" kind="caution" action={<Button size="sm" onClick={() => act("resume")}>Resume new trades</Button>}>
@@ -79,6 +96,8 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
             : <Button size="sm" variant="quiet" onClick={() => act("pause")}>Pause new trades</Button>}>
             <dl className="facts">
               <dt>Strategy</dt><dd>{control.strategy_catalog?.find((s) => s.name === eff?.editable.strategy)?.label ?? hb?.strategy ?? "–"}</dd>
+              <dt>Prices</dt><dd>{hb?.mode === "replay" ? "Replayed history" : !hb?.feed ? "–" : hb.feed.ok ? "Live from Groww" : "Groww, not connected"}</dd>
+              <dt>Orders</dt><dd className={hb?.mode === "live" ? "loss" : ""}>{hb?.mode === "live" ? "Real, on Groww" : hb ? "Simulated (paper)" : "–"}</dd>
               <dt>Reviewer</dt><dd>{!hb?.reviewer || hb.reviewer === "none" ? "Off" : hb.reviewer === "heuristic" ? "Rule-based baseline" : `${hb.reviewer}, ${eff?.editable.llm_effort} effort`}</dd>
               <dt>Risk per trade</dt><dd>{eff ? `${inr((eff.editable.capital * eff.editable.risk_per_trade_pct) / 100)} (${eff.editable.risk_per_trade_pct}% of ${inr(eff.editable.capital)})` : "–"}</dd>
               <dt>Daily loss limit</dt><dd>{eff ? <LossUsed used={Math.max(0, -total)} limit={(eff.editable.capital * eff.editable.max_daily_loss_pct) / 100} /> : "–"}</dd>

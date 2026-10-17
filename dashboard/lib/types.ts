@@ -9,6 +9,7 @@ export type Heartbeat = {
   at: string; wall_at?: string; mode: "paper" | "live" | "replay"; strategy?: string; open_positions: number;
   positions?: Position[]; realized_pnl: number; unrealized_pnl?: number; trades_today?: number; halted: boolean;
   halt_reason?: string; market_open?: boolean; capital?: number; llm_enabled?: boolean; reviewer?: string;
+  trading?: "running" | "stopped"; feed?: { source: string; ok: boolean; message: string } | null;
 };
 
 export type ParamSpec = { name: string; label: string; type: "int" | "float"; min: number; max: number; step: number; default: number };
@@ -33,7 +34,7 @@ export type EffectiveSettings = {
 };
 
 export type Control = {
-  kill_switch?: boolean; paused?: boolean; login_confirmed_for?: string; heartbeat?: Heartbeat;
+  kill_switch?: boolean; paused?: boolean; trading_enabled?: boolean; login_confirmed_for?: string; heartbeat?: Heartbeat;
   effective_settings?: EffectiveSettings; settings_overrides?: Record<string, unknown>; strategy_catalog?: StrategyInfo[];
 };
 

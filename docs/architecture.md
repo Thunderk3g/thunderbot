@@ -16,7 +16,7 @@ This document maps the blueprint in [`research-report.md`](research-report.md) o
   └────────────────────────────────────────────┼──────────────────────────────────────────────────────┘
                                                │ best-effort mirror (service-role key)
                                                ▼
-                                      Supabase Postgres  ◄──── control: kill switch, pause, login confirm
+                                      Supabase Postgres  ◄──── control: start/stop, kill, pause, login
                                                ▲
                                                │ server-side only (service-role key)
                                       Next.js dashboard on Vercel (Basic Auth)
@@ -30,7 +30,7 @@ production, `thunderbot serve` over SQLite locally), so the trading VPS needs no
 | Flow | Mechanism |
 |---|---|
 | Live state | The engine writes a `heartbeat` control row every tick: positions with LTP and unrealized P&L, realized P&L, halt state, active strategy, reviewer. It also writes `equity` snapshots every minute. The dashboard polls `/api/state` every 2 s. |
-| Controls | Dashboard writes `kill_switch`, `paused`, `login_confirmed_for` control rows; the engine reads them each tick. Kill is hold-to-confirm. |
+| Controls | Dashboard writes `trading_enabled` (Start/Stop), `kill_switch`, `paused`, `login_confirmed_for` control rows; the engine reads them each tick. Paper/live workers idle until Start; Stop is hold-to-confirm and flattens. |
 | Settings | Dashboard writes `settings_overrides`. The engine applies them on its next tick via `Settings.with_overrides`: an **allowlist** of keys (`config.OVERRIDABLE`), each type-checked and bounded, always applied on top of the env-loaded base so overrides never accumulate. Live trading, MTF, static IP, credentials and login policy are not on the list. The result, including rejected keys, is published as `effective_settings`. |
 | Research | Dashboard inserts a `jobs` row; `JobRunner` (`thunderbot jobs`, or inside `thunderbot serve`) claims it and runs a backtest or walk-forward sweep with the live strategy, risk and cost code, then writes progress and results back. Data sources: synthetic, CSV from `TB_BACKTEST_DATA_DIR` (never a client-supplied path), or Groww. |
 | Reviewer value | Every signal, traded or not, is tracked virtually to its stop, target or end of day and written to `signal_outcomes` with an R-multiple and the reviewer's decision. The Performance tab compares average R of vetoed and approved signals. That is the evidence for keeping or dropping the LLM. |

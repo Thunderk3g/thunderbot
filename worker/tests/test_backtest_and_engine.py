@@ -228,6 +228,56 @@ class TestEngine:
         assert len(calls) == 1
 
 
+    def test_require_start_waits_for_start_and_stop_flattens(self, settings, tmp_path):
+        h = Harness(settings, tmp_path, require_start=True)
+        h.tick(9, 45, 101.5)
+        assert h.engine.positions == {} and h.rows("orders") == []
+        assert h.store.get_control()["heartbeat"]["trading"] == "stopped"
+
+        h.store.set_control("trading_enabled", True)
+        h.engine.state.last_bar = None
+        h.engine.strategy.reset_day()
+        h.tick(9, 45, 101.5)
+        assert "AAA" in h.engine.positions
+        assert h.store.get_control()["heartbeat"]["trading"] == "running"
+
+        h.store.set_control("trading_enabled", False)
+        h.tick(9, 50, 102.0)
+        assert h.engine.positions == {}
+        assert h.rows("trades")[0]["exit_reason"] == "stopped"
+        assert any(e["kind"] == "trading_stopped" for e in h.rows("events"))
+
+    def test_stopped_engine_makes_no_broker_calls(self, settings, tmp_path):
+        calls = []
+        h = Harness(settings, tmp_path, require_start=True, before_market_tick=calls.append)
+        h.tick(9, 45, 101.5)
+        assert calls == []
+
+    def test_feed_problem_skips_tick_and_is_reported_once(self, settings, tmp_path):
+        problem = ["Groww login failed: bad secret"]
+        h = Harness(settings, tmp_path, before_market_tick=lambda now: problem[0],
+                    feed_status=lambda: {"source": "groww", "ok": not problem[0], "message": problem[0] or "connected"})
+        h.tick(9, 45, 101.5)
+        h.tick(9, 46, 101.5)
+        assert h.engine.positions == {}
+        assert [e["kind"] for e in h.rows("events")].count("feed_error") == 1
+        assert h.store.get_control()["heartbeat"]["feed"]["ok"] is False
+        problem[0] = None
+        h.tick(9, 47, 101.5)
+        assert any(e["kind"] == "feed_ok" for e in h.rows("events"))
+
+    def test_late_candle_is_retried_until_it_arrives(self, settings, tmp_path):
+        h = Harness(settings, tmp_path)
+        full = h.engine.data.bars
+        h.engine.data.bars = [b for b in full if b.ts < ts(9, 40)]  # the 9:40 bar is not published yet
+        h.tick(9, 45, 101.5)
+        assert h.engine.positions == {} and "AAA" in h.engine.state.pending_scan
+        h.engine.data.bars = full
+        h.now = ts(9, 45) + timedelta(seconds=20)
+        h.engine.tick()
+        assert "AAA" in h.engine.positions and "AAA" not in h.engine.state.pending_scan
+
+
 def test_round_tick():
     assert round_tick(100.01, up=True) == 100.05
     assert round_tick(100.04, up=False) == 100.0

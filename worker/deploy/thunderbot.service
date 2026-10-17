@@ -1,6 +1,7 @@
 # systemd unit for the trading worker on a Mumbai VPS with a static IP.
 # Install: sudo cp deploy/thunderbot.service /etc/systemd/system/ && sudo systemctl daemon-reload
-# Paper first:  ExecStart=... thunderbot paper
+# The worker idles until "Start" on the dashboard (or `thunderbot start`); "Stop" flattens and idles again.
+# Paper first:  ExecStart=... thunderbot paper   (live Groww prices, simulated orders)
 # Live later:   ExecStart=... thunderbot live --i-understand-the-risks   (plus TB_LIVE_TRADING_ENABLED=true)
 [Unit]
 Description=Thunderbot trading worker

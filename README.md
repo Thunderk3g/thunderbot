@@ -22,7 +22,7 @@ web cockpit. Built from the blueprint in [`docs/research-report.md`](docs/resear
 
 | Tab | What it does |
 |---|---|
-| **Today** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. Hold-to-kill switch in the header. |
+| **Today** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. **Start paper trading** / hold-to-stop in the rail, plus the Groww connection status. |
 | **Results** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |
 | **Lab** | Backtests and **walk-forward sweeps** run on the worker with the live engine's own code. Sweeps rank parameter sets on the first 70% of history and show how each did on the unseen last 30%. Promote a configuration to the engine in one click; configs that didn't hold up out-of-sample need a second, deliberate click. |
 | **Settings** | Strategy and parameters, capital and risk limits, universe and timing, reviewer. The worker validates and clamps everything. Live trading, MTF, the static IP and credentials are locked to the VPS environment, so the dashboard can never switch them on. |

@@ -25,15 +25,24 @@ type PageId = (typeof PAGES)[number]["id"];
 const ALERT_KINDS = new Set(["error", "exit_failed", "stop_failed", "halt", "kill_switch", "order_rejected", "unmanaged_position"]);
 const MODE_WORD: Record<string, string> = { paper: "paper trading", live: "live trading", replay: "a replay" };
 
-function workerState(control?: Control): { alive: boolean; title: string; detail: string } {
+/** What the operator asked for. The heartbeat says what the worker is actually doing. */
+export function tradingOn(control?: Control): boolean {
+  return !!control && !control.kill_switch && !!control.trading_enabled;
+}
+
+function workerState(control?: Control): { on: boolean; title: string; detail: string } {
   const hb: Heartbeat | undefined = control?.heartbeat;
-  if (!hb) return { alive: false, title: "No worker yet", detail: "Start one on the server to see trading here." };
+  if (!hb) return { on: false, title: "No worker yet", detail: "Start the worker on the server to trade from here." };
   const alive = !!hb.wall_at && Date.now() - new Date(hb.wall_at).getTime() < 45_000;
-  if (!alive) return { alive, title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
-  if (control?.kill_switch) return { alive, title: "Stopped", detail: "Everything is flat. No new trades." };
-  if (hb.halted) return { alive, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
-  if (control?.paused) return { alive, title: "Paused", detail: "Managing open trades, taking no new ones." };
-  return { alive, title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
+  if (!alive) return { on: false, title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
+  if (hb.mode === "replay") return { on: true, title: "Running a replay", detail: `Updated ${ago(hb.wall_at)}.` };
+  if (control?.kill_switch) return { on: false, title: "Stopped", detail: "Everything is flat. Press Start to trade again." };
+  if (!control?.trading_enabled) return { on: false, title: "Not trading", detail: `Press Start to begin ${MODE_WORD[hb.mode] ?? hb.mode}.` };
+  if (hb.feed && !hb.feed.ok) return { on: false, title: "Groww not connected", detail: "See the notice on Today." };
+  if (hb.halted) return { on: false, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
+  if (control?.paused) return { on: true, title: "Paused", detail: "Managing open trades, taking no new ones." };
+  if (hb.market_open === false) return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
+  return { on: true, title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
 }
 
 export default function App() {
@@ -54,13 +63,16 @@ export default function App() {
     window.scrollTo({ top: 0 });
   };
   const act = async (action: string) => {
+    if (action === "start" && control?.heartbeat?.mode === "live"
+      && !window.confirm("The worker is in LIVE mode. Start trading with real money?")) return;
     await post("/api/control", { action });
     live.refresh();
   };
 
-  const stopControl = control?.kill_switch
-    ? <Button variant="primary" block onClick={() => act("release")}><Play size={15} />Resume trading</Button>
-    : <HoldButton block onConfirm={() => act("kill")}><OctagonX size={15} />Hold to stop</HoldButton>;
+  const mode = control?.heartbeat?.mode === "live" ? "live" : "paper";
+  const tradeButton = (compact: boolean) => tradingOn(control)
+    ? <HoldButton block onConfirm={() => act("stop")}><OctagonX size={15} />{compact ? "Hold to stop" : "Hold to stop trading"}</HoldButton>
+    : <Button variant="primary" block onClick={() => act("start")}><Play size={15} />{compact ? "Start" : `Start ${mode} trading`}</Button>;
 
   return (
     <div className="frame">
@@ -76,20 +88,20 @@ export default function App() {
         </nav>
         <div className="rail-foot">
           <div className="state">
-            <StatusDot on={state.alive && !control?.kill_switch && !control?.heartbeat?.halted} />
+            <StatusDot on={state.on} />
             <div><strong className={control?.heartbeat?.mode === "live" ? "loss" : ""}>{state.title}</strong><span className="soft">{state.detail}</span></div>
           </div>
-          {stopControl}
+          {tradeButton(false)}
           <ThemeToggle />
         </div>
       </aside>
 
       <header className="mobile-bar">
         <div className="state">
-          <StatusDot on={state.alive && !control?.kill_switch && !control?.heartbeat?.halted} />
+          <StatusDot on={state.on} />
           <div><strong>{state.title}</strong></div>
         </div>
-        <div style={{ width: 150 }}>{stopControl}</div>
+        <div style={{ width: 132 }}>{tradeButton(true)}</div>
       </header>
 
       <main className="content">
