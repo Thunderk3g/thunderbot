@@ -41,13 +41,13 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
         <AnimatePresence initial={false}>
           {feedDown && (
             <Notice key="feed" kind="stop">
-              Groww isn&apos;t connected, so there are no live prices and nothing can trade. {feedDown}
+              {hb?.feed?.source === "yahoo" ? "Yahoo prices aren't coming through" : "Groww isn't connected"}, so nothing can trade. {feedDown}
             </Notice>
           )}
           {notStarted && (
             <Notice key="start" kind="info" action={<Button size="sm" variant="primary" onClick={() => act("start")}>Start {hb.mode === "live" ? "live" : "paper"} trading</Button>}>
               {control.kill_switch ? "Trading was stopped and everything is flat." : "Not trading."}{" "}
-              {hb.mode === "live" ? "Live mode places real orders on Groww." : "Paper trading uses live Groww prices; the orders are simulated."}
+              {hb.mode === "live" ? "Live mode places real orders on Groww." : `Paper trading uses live ${hb.feed?.source === "yahoo" ? "Yahoo Finance" : "Groww"} prices; the orders are simulated.`}
             </Notice>
           )}
           {trading && hb?.market_open === false && !feedDown && (
@@ -96,7 +96,7 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
             : <Button size="sm" variant="quiet" onClick={() => act("pause")}>Pause new trades</Button>}>
             <dl className="facts">
               <dt>Strategy</dt><dd>{control.strategy_catalog?.find((s) => s.name === eff?.editable.strategy)?.label ?? hb?.strategy ?? "–"}</dd>
-              <dt>Prices</dt><dd>{hb?.mode === "replay" ? "Replayed history" : !hb?.feed ? "–" : hb.feed.ok ? "Live from Groww" : "Groww, not connected"}</dd>
+              <dt>Prices</dt><dd>{hb?.mode === "replay" ? "Replayed history" : !hb?.feed ? "–" : `${hb.feed.source === "yahoo" ? "Yahoo Finance (free)" : "Groww"}${hb.feed.ok ? "" : ", not connected"}`}</dd>
               <dt>Orders</dt><dd className={hb?.mode === "live" ? "loss" : ""}>{hb?.mode === "live" ? "Real, on Groww" : hb ? "Simulated (paper)" : "–"}</dd>
               <dt>Reviewer</dt><dd>{!hb?.reviewer || hb.reviewer === "none" ? "Off" : hb.reviewer === "heuristic" ? "Rule-based baseline" : `${hb.reviewer}, ${eff?.editable.llm_effort} effort`}</dd>
               <dt>Risk per trade</dt><dd>{eff ? `${inr((eff.editable.capital * eff.editable.risk_per_trade_pct) / 100)} (${eff.editable.risk_per_trade_pct}% of ${inr(eff.editable.capital)})` : "–"}</dd>

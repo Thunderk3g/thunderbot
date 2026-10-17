@@ -14,8 +14,9 @@ dependencies = [
 
 [project.optional-dependencies]
 groww = ["growwapi>=1.5.0", "pyotp>=2.9"]
+yahoo = ["yfinance>=0.2.54"]
 llm = ["anthropic>=1.15.0", "pydantic>=2.6"]
-all = ["growwapi>=1.5.0", "pyotp>=2.9", "anthropic>=1.15.0", "pydantic>=2.6"]
+all = ["growwapi>=1.5.0", "pyotp>=2.9", "yfinance>=0.2.54", "anthropic>=1.15.0", "pydantic>=2.6"]
 dev = ["pytest>=8", "pydantic>=2.6"]
 
 [project.scripts]

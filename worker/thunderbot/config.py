@@ -131,6 +131,7 @@ class Settings:
     groww_totp_secret: str | None = None
     groww_api_secret: str | None = None
     expected_static_ip: str | None = None
+    feed: str = "yahoo"  # price source for paper trading: groww (official, paid plan) | yahoo (free, can lag)
     live_trading_enabled: bool = False
     allow_mtf_api: bool = False
     require_login_confirmation: bool = True
@@ -183,6 +184,7 @@ class Settings:
             live_trading_enabled=_env_bool("TB_LIVE_TRADING_ENABLED", False),
             allow_mtf_api=_env_bool("TB_ALLOW_MTF_API", False),
             require_login_confirmation=_env_bool("TB_REQUIRE_LOGIN_CONFIRMATION", True),
+            feed=(_env("TB_FEED", cls.feed) or cls.feed).strip().lower(),
             data_dir=_env("TB_DATA_DIR", cls.data_dir) or cls.data_dir,
             backtest_data_dir=_env("TB_BACKTEST_DATA_DIR", cls.backtest_data_dir) or cls.backtest_data_dir,
             supabase_url=_env("SUPABASE_URL"),
@@ -203,6 +205,9 @@ class Settings:
         clamp("max_leverage", HARD_MAX_LEVERAGE)
         clamp("risk_per_trade_pct", HARD_MAX_RISK_PER_TRADE_PCT)
         clamp("max_daily_loss_pct", HARD_MAX_DAILY_LOSS_PCT)
+        if self.feed not in ("groww", "yahoo"):
+            self.warnings.append(f"TB_FEED={self.feed!r} is not groww or yahoo; using yahoo")
+            self.feed = "yahoo"
         if self.llm_fail_mode not in ("reject", "pass"):
             self.warnings.append(f"llm_fail_mode={self.llm_fail_mode!r} invalid; using 'reject'")
             self.llm_fail_mode = "reject"
@@ -280,6 +285,7 @@ class Settings:
                 "require_login_confirmation": self.require_login_confirmation,
                 "static_ip_configured": bool(self.expected_static_ip),
                 "groww_configured": bool(self.groww_api_key),
+                "feed": self.feed,
                 "llm_model": self.llm_model,
                 "orders_per_second": self.orders_per_second,
             },

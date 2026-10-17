@@ -169,6 +169,7 @@ export default function SettingsView({ control, refresh }: { control?: Control; 
           <dt>Margin trading (MTF)</dt><dd>{eff.env_only.allow_mtf_api ? "Allowed" : "Off"}</dd>
           <dt>Daily login confirmation</dt><dd>{eff.env_only.require_login_confirmation ? "Required" : "Not required"}</dd>
           <dt>Static IP check</dt><dd>{eff.env_only.static_ip_configured ? "Configured" : "Not configured yet"}</dd>
+          <dt>Paper price feed</dt><dd>{eff.env_only.feed === "groww" ? "Groww (official)" : "Yahoo Finance (free, can lag)"}</dd>
           <dt>Groww account</dt><dd>{eff.env_only.groww_configured ? "Connected" : "Not connected yet"}</dd>
           <dt>Order rate</dt><dd className="tnum">{eff.env_only.orders_per_second} a second (exchange limit 10)</dd>
         </dl>

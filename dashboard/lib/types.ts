@@ -26,7 +26,7 @@ export type EffectiveSettings = {
   bounds: Record<string, { type: string; min: number | null; max: number | null }>;
   env_only: {
     live_trading_enabled: boolean; allow_mtf_api: boolean; require_login_confirmation: boolean;
-    static_ip_configured: boolean; groww_configured: boolean; llm_model: string; orders_per_second: number;
+    static_ip_configured: boolean; groww_configured: boolean; llm_model: string; orders_per_second: number; feed?: string;
   };
   hard_ceilings: Record<string, number | string>;
   llm_efforts: string[];

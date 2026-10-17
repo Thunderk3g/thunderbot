@@ -10,9 +10,13 @@ import { PnlCurve } from "./charts";
 import { Button, ChipsInput, Empty, Figures, Panel, Progress, Section, Segmented, SliderField, spring } from "./ui";
 
 type Kind = "backtest" | "sweep";
-type Source = "demo" | "csv" | "groww";
-const SOURCE_NAME: Record<string, string> = { demo: "practice data", csv: "saved Groww candles", groww: "Groww history" };
+type Source = "yahoo" | "demo" | "csv" | "groww";
+const SOURCE_NAME: Record<string, string> = { yahoo: "Yahoo Finance", demo: "practice data", csv: "saved candles", groww: "Groww history" };
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
+
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+}
 
 function defaultsFor(s?: StrategyInfo): Record<string, number> {
   return Object.fromEntries((s?.params ?? []).map((p) => [p.name, p.default]));
@@ -31,9 +35,10 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
   const [strategy, setStrategy] = useState<string>("");
   const [params, setParams] = useState<Record<string, number>>({});
   const [symbols, setSymbols] = useState<string[]>([]);
-  const [source, setSource] = useState<Source>("demo");
-  const [start, setStart] = useState("2026-01-05");
-  const [end, setEnd] = useState("2026-06-30");
+  const [source, setSource] = useState<Source>("yahoo");
+  // Yahoo keeps 5-minute bars for about 60 days, so default to the last 8 weeks.
+  const [start, setStart] = useState(() => isoDaysAgo(56));
+  const [end, setEnd] = useState(() => isoDaysAgo(0));
   const [grid, setGrid] = useState<Record<string, string>>({});
   const [jobId, setJobId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -128,10 +133,10 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
               <div className="field">
                 <label>Prices</label>
                 <Segmented<Source> label="Price data" value={source} onChange={setSource} options={[
-                  { value: "demo", label: "Practice" }, { value: "csv", label: "Saved" },
+                  { value: "yahoo", label: "Yahoo (free)" }, { value: "demo", label: "Practice" }, { value: "csv", label: "Saved" },
                   ...(eff?.env_only.groww_configured ? [{ value: "groww" as Source, label: "Groww" }] : []),
                 ]} />
-                <span className="hint">{source === "demo" ? "Random prices for learning the tools. No strategy can have an edge on them." : source === "csv" ? "Candles saved on the server with thunderbot fetch-history." : "Downloaded from Groww for the dates below."}</span>
+                <span className="hint">{source === "yahoo" ? "Real NSE prices from Yahoo Finance, free. 5-minute bars go back about 60 days." : source === "demo" ? "Random prices for learning the tools. No strategy can have an edge on them." : source === "csv" ? "Candles saved on the server with thunderbot fetch-history." : "Downloaded from Groww for the dates below."}</span>
               </div>
               <div className="time-grid">
                 <div className="field"><label htmlFor="lab-from">From</label><input id="lab-from" type="date" className="input" value={start} onChange={(e) => setStart(e.target.value)} /></div>
@@ -150,7 +155,7 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
           </Panel>
           <History selected={jobId} onSelect={setJobId} />
         </div>
-        <div>{jobId ? <JobView id={jobId} onApply={apply} /> : <Empty title="Results appear here.">Pick a strategy and run a backtest. Results on practice data are only for learning the tools.</Empty>}</div>
+        <div>{jobId ? <JobView id={jobId} onApply={apply} /> : <Empty title="Results appear here.">Pick a strategy and run a backtest on real prices from Yahoo. Practice data is only for learning the tools.</Empty>}</div>
       </div>
     </div>
   );

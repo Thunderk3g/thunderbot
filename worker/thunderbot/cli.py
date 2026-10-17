@@ -85,8 +85,12 @@ def cmd_demo_data(args, s: Settings) -> int:
 
 
 def cmd_fetch_history(args, s: Settings) -> int:
-    client = _groww_client(s)
-    md = GrowwMarketData(client, exchange=s.exchange)
+    if args.source == "yahoo":
+        from .yahoo import YahooMarketData
+
+        md = YahooMarketData(exchange=s.exchange)
+    else:
+        md = GrowwMarketData(_groww_client(s), exchange=s.exchange)
     end = datetime.combine(date.fromisoformat(args.end), datetime.min.time(), tzinfo=IST) if args.end else now_ist()
     start = end - timedelta(days=args.days)
     out = Path(args.out)
@@ -99,11 +103,21 @@ def cmd_fetch_history(args, s: Settings) -> int:
 
 
 def cmd_backtest(args, s: Settings) -> int:
-    md = CSVMarketData(args.data)
-    symbols = s.symbols if not args.all_files else md.symbols()
+    if args.yahoo:
+        from .yahoo import YahooMarketData
+
+        md = YahooMarketData(exchange=s.exchange)
+        symbols = s.symbols
+        print("Using free Yahoo Finance candles (real NSE prices; 5-minute bars cover the last 60 days only).")
+    elif args.data:
+        md = CSVMarketData(args.data)
+        symbols = s.symbols if not args.all_files else md.symbols()
+    else:
+        print("Give --data <dir of CSVs> or --yahoo.", file=sys.stderr)
+        return 2
     s.symbols = symbols
     start = datetime.fromisoformat(args.start).replace(tzinfo=IST) if args.start else datetime(2000, 1, 1, tzinfo=IST)
-    end = datetime.fromisoformat(args.end).replace(tzinfo=IST) if args.end else datetime(2100, 1, 1, tzinfo=IST)
+    end = datetime.fromisoformat(args.end).replace(tzinfo=IST) if args.end else now_ist() + timedelta(days=1)
     data = {sym: md.candles(sym, s.interval_minutes, start, end) for sym in symbols}
     signal_filter = None
     if args.llm:
@@ -136,6 +150,8 @@ def _run_engine(s: Settings, mode: str) -> int:
     from .throttle import OrderThrottle
 
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    if mode == "paper" and s.feed == "yahoo":
+        return _run_paper_on_yahoo(s, store)
     # The worker stays up even if the Groww login fails, and shows the reason on the dashboard.
     # Paper mode still uses Groww for live prices and candles; only the orders are simulated.
     link = GrowwLink(lambda: _groww_session(s),
@@ -152,6 +168,26 @@ def _run_engine(s: Settings, mode: str) -> int:
         before_market_tick=lambda now: link.ensure(), filter_factory=build_filter,
         require_login_confirmation=(mode == "live" and s.require_login_confirmation),
         require_start=True, feed_status=link.status,
+    )
+    engine.run_forever()
+    return 0
+
+
+def _run_paper_on_yahoo(s: Settings, store) -> int:
+    """Paper trading on free Yahoo Finance prices: no Groww account or data plan needed."""
+    from .broker.paper import PaperBroker
+    from .engine import TradingEngine
+    from .llm.filter import build_filter
+    from .yahoo import YahooFeed
+
+    feed = YahooFeed(exchange=s.exchange)
+    if problem := feed.ensure():
+        store.event("feed_error", problem)
+    engine = TradingEngine(
+        settings=s, broker=PaperBroker(s.capital, s.slippage_bps), quotes=feed.quotes, data=feed.data,
+        strategy=_strategy(s), signal_filter=build_filter(s), store=store, mode="paper",
+        before_market_tick=lambda now: feed.ensure(), filter_factory=build_filter,
+        require_start=True, feed_status=feed.status,
     )
     engine.run_forever()
     return 0
@@ -327,7 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--seed", type=int, default=7)
     d.set_defaults(func=cmd_demo_data)
 
-    f = sub.add_parser("fetch-history", help="download candles from Groww into CSV (paid plan required)")
+    f = sub.add_parser("fetch-history", help="download candles into CSV from Groww (paid plan) or Yahoo (free)")
+    f.add_argument("--source", choices=("groww", "yahoo"), default="groww")
     f.add_argument("--out", default="data/groww")
     f.add_argument("--days", type=int, default=90)
     f.add_argument("--end", help="YYYY-MM-DD (default: now)")
@@ -335,7 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.set_defaults(func=cmd_fetch_history)
 
     b = sub.add_parser("backtest", help="run the strategy over CSV data")
-    b.add_argument("--data", required=True, help="directory of <SYMBOL>.csv files")
+    b.add_argument("--data", help="directory of <SYMBOL>.csv files")
+    b.add_argument("--yahoo", action="store_true", help="download free Yahoo Finance candles instead of reading CSVs")
     b.add_argument("--start")
     b.add_argument("--end")
     b.add_argument("--all-files", action="store_true", help="use every CSV in --data instead of TB_SYMBOLS")
@@ -344,7 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--json", action="store_true")
     b.set_defaults(func=cmd_backtest)
 
-    sub.add_parser("paper", help="paper trade against live Groww prices").set_defaults(func=cmd_paper)
+    sub.add_parser("paper", help="paper trade on live prices (TB_FEED=groww or yahoo); orders are simulated").set_defaults(func=cmd_paper)
 
     sv = sub.add_parser("serve", help="local API for the dashboard (stands in for Supabase) + job runner")
     sv.add_argument("--host", default="127.0.0.1")

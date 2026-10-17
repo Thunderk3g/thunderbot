@@ -111,9 +111,14 @@ the dashboard (or run `thunderbot start`). **Hold to stop** (or `thunderbot stop
 open position and takes no new trades; the worker keeps running and waits for the next Start.
 Start and stop survive restarts, since they live in the control table.
 
-Paper trading uses live Groww prices (LTP every few seconds, 5-minute candles from Groww's
-historical API) and simulates only the orders, so it needs a working Groww login and the
-Live Data plan. If the login fails, the worker stays up and the dashboard shows why
+Paper trading uses live prices and simulates only the orders. `TB_FEED` picks the prices:
+`yahoo` (default) is free Yahoo Finance data through the open-source `yfinance` library, with no
+account needed, but it is unofficial and can lag the exchange; `groww` is Groww's official feed
+(LTP every few seconds, 5-minute candles), which needs a working Groww login and the paid
+Live Data plan. Live trading always uses Groww.
+
+Backtests can use the same free data: **Lab → Prices → Yahoo (free)**, or
+`thunderbot backtest --yahoo`. Yahoo keeps 5-minute bars for about 60 days only. If the login fails, the worker stays up and the dashboard shows why
 ("Groww not connected"). It retries at most every 5 minutes, because Groww allows only 150
 token requests a day. Fix the credentials in `/etc/thunderbot.env` and restart the service.
 

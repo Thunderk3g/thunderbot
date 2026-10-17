@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 
 MAX_SWEEP_COMBOS = 60
 MAX_TRADES_IN_RESULT = 300
-DATA_SOURCES = ("demo", "csv", "groww")
+DATA_SOURCES = ("demo", "yahoo", "csv", "groww")
 
 
 class JobError(ValueError):
@@ -69,6 +69,22 @@ class DataLoader:
             return data, "Synthetic random-walk data: no strategy can have a real edge here. Use it to learn the tools."
         start_dt = datetime.combine(start, datetime.min.time(), tzinfo=IST)
         end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=IST)
+        if source == "yahoo":
+            from .yahoo import YahooMarketData
+
+            md = YahooMarketData(exchange=self.s.exchange)
+            floor = md.earliest(interval)
+            data = {}
+            for sym in symbols:
+                data[sym] = md.candles(sym, interval, start_dt, end_dt)
+                time.sleep(0.2)  # be gentle with a free service
+            if not any(data.values()):
+                raise JobError(f"Yahoo returned no {interval}-minute candles for these dates. Yahoo keeps "
+                               f"{interval}-minute bars only since {floor:%d %b %Y}." if floor else
+                               "Yahoo returned no candles for these dates and symbols.")
+            clipped = f" Yahoo keeps {interval}-minute bars only since {floor:%d %b %Y}." if floor and start_dt < floor else ""
+            return data, ("Free Yahoo Finance candles (real NSE prices, unofficial source)." + clipped +
+                          " Yahoo shows zero volume for the 09:15 bar on most days and skips a few bars.")
         if source == "csv":
             md = CSVMarketData(self.s.backtest_data_dir)
             try:

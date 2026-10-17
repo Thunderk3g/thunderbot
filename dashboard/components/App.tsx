@@ -38,7 +38,7 @@ function workerState(control?: Control): { on: boolean; title: string; detail: s
   if (hb.mode === "replay") return { on: true, title: "Running a replay", detail: `Updated ${ago(hb.wall_at)}.` };
   if (control?.kill_switch) return { on: false, title: "Stopped", detail: "Everything is flat. Press Start to trade again." };
   if (!control?.trading_enabled) return { on: false, title: "Not trading", detail: `Press Start to begin ${MODE_WORD[hb.mode] ?? hb.mode}.` };
-  if (hb.feed && !hb.feed.ok) return { on: false, title: "Groww not connected", detail: "See the notice on Today." };
+  if (hb.feed && !hb.feed.ok) return { on: false, title: hb.feed.source === "yahoo" ? "No prices from Yahoo" : "Groww not connected", detail: "See the notice on Today." };
   if (hb.halted) return { on: false, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
   if (control?.paused) return { on: true, title: "Paused", detail: "Managing open trades, taking no new ones." };
   if (hb.market_open === false) return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
