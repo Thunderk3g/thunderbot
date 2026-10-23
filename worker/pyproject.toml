@@ -25,5 +25,8 @@ thunderbot = "thunderbot.cli:main"
 [tool.setuptools.packages.find]
 include = ["thunderbot*"]
 
+[tool.setuptools.package-data]
+thunderbot = ["universes/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

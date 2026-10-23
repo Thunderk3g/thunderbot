@@ -23,7 +23,7 @@ export async function POST(req: Request) {
   } catch {
     return fail("invalid JSON", 400);
   }
-  if (body.kind !== "backtest" && body.kind !== "sweep") return fail("kind must be backtest or sweep", 400);
+  if (body.kind !== "backtest" && body.kind !== "sweep" && body.kind !== "invest") return fail("kind must be backtest, sweep or invest", 400);
   if (!body.params || typeof body.params !== "object") return fail("params required", 400);
   return guard(async () => {
     const id = crypto.randomUUID();

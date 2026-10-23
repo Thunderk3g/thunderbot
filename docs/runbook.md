@@ -104,6 +104,26 @@ contract notes.
 
 Raise `TB_CAPITAL` gradually. Keep `TB_MAX_LEVERAGE=1` until you have a long live record.
 
+## Daily investing (the default)
+
+Our research (`reports/Evidence based NSE trading strategies.md`) found no support for intraday
+trading by retail traders: 71% of SEBI-studied intraday traders lost money in FY23, and our own
+intraday strategies lost on real data. The worker service therefore runs `thunderbot invest`:
+a slow, daily delivery (CNC) strategy.
+
+- `TB_INVEST_STRATEGY=index_trend` (default): hold NIFTYBEES while the Nifty is more than 1% above
+  its 200-day average at month-end; hold cash when it is more than 1% below. Backtest 2011-2026:
+  about 8% a year after costs and tax, worst fall about -17%, against 9.5% before tax and -36% for
+  simply holding NIFTYBEES.
+- `TB_INVEST_STRATEGY=momentum`: the top 15 Nifty 100 stocks by NSE-style momentum, re-ranked every
+  quarter, with the same monthly market filter. The backtest uses today's index members, so its
+  numbers are inflated by survivorship bias; expect roughly market + 3-5 points a year over a full
+  cycle, with long stretches of underperformance.
+
+The runner acts once a day at `TB_INVEST_AT` (15:10 IST) and trades only on the last trading day of
+the month (or when the portfolio is empty). Test either strategy first in **Lab -> Invest (daily)**,
+or with `thunderbot invest-backtest --strategy momentum --years 15`.
+
 ## Starting and stopping
 
 The worker service runs all the time but trades only after you press **Start paper trading** on

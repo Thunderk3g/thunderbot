@@ -193,6 +193,77 @@ def _run_paper_on_yahoo(s: Settings, store) -> int:
     return 0
 
 
+def _run_invest(s: Settings, mode: str) -> int:
+    """Daily delivery investing (see thunderbot/invest.py). Paper uses TB_FEED prices; live uses Groww."""
+    from .clock import parse_hhmm
+    from .invest import InvestRunner
+
+    store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    broker = None
+    if mode == "live" or s.feed == "groww":
+        from .broker.groww import GrowwBroker, GrowwLink
+        from .throttle import OrderThrottle
+
+        link = GrowwLink(lambda: _groww_session(s),
+                         on_fresh_token=lambda: store.event("login", "new Groww access token issued"))
+        if problem := link.ensure():
+            store.event("feed_error", problem)
+        groww = GrowwBroker(link, OrderThrottle(s.orders_per_second, s.orders_per_minute), exchange=s.exchange)
+        quotes, status = groww, link.status
+        broker = groww if mode == "live" else None
+    else:
+        from .yahoo import YahooFeed
+
+        feed = YahooFeed(exchange=s.exchange)
+        quotes, status = feed.quotes, feed.status
+    runner = InvestRunner(store, quotes, s.clock(), s.capital, mode=mode, broker=broker, strategy=s.invest_strategy,
+                          run_at=parse_hhmm(s.invest_at), feed_status=status)
+    from .daily import DAILY_CATALOG
+
+    store.set_control("daily_catalog", DAILY_CATALOG)
+    runner.run_forever()
+    return 0
+
+
+def cmd_invest(args, s: Settings) -> int:
+    if args.live:
+        from .compliance import check_static_ip
+
+        if not args.i_understand_the_risks or not s.live_trading_enabled:
+            print("Refusing to invest live: needs --i-understand-the-risks and TB_LIVE_TRADING_ENABLED=true.", file=sys.stderr)
+            return 2
+        ip = check_static_ip(s.expected_static_ip)
+        if not ip.ok:
+            print(f"Refusing to invest live: {ip.message}", file=sys.stderr)
+            return 2
+        return _run_invest(s, "live")
+    return _run_invest(s, "paper")
+
+
+def cmd_invest_backtest(args, s: Settings) -> int:
+    from . import daily
+
+    strat = daily.build_daily(args.strategy, {})
+    end = date.fromisoformat(args.end) if args.end else now_ist().date()
+    start = end - timedelta(days=int(args.years * 365.25))
+    symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *getattr(strat, "symbols", [])]))
+    prices = daily.load_prices(symbols, start - timedelta(days=420), end, cache_dir=s.data_path / "cache" / "daily")
+    res = daily.backtest(strat, prices, start, end, capital=s.capital, tax=None if args.no_tax else daily.CapitalGainsTax(),
+                         cash_yield_pct=args.cash_yield)
+    m = res.metrics()
+    bench = m.pop("benchmark")
+    print(f"{args.strategy}: {start} to {end}, capital {s.capital:,.0f}, {'pre-tax' if args.no_tax else 'after tax'}")
+    for k, v in m.items():
+        print(f"  {k:>26}: {v}")
+    print("  benchmark (NIFTYBEES held, pre-tax):", {k: bench.get(k) for k in ("cagr_pct", "max_drawdown_pct", "sharpe")})
+    print("  year  strategy  benchmark")
+    for y in res.yearly():
+        print(f"  {y['year']}  {y['strategy_pct']:>7}%  {y['benchmark_pct']:>8}%")
+    if args.strategy == "momentum":
+        print("Note: today's Nifty 100 list is used, so survivorship bias inflates this result.")
+    return 0
+
+
 def _groww_factory(s: Settings):
     if not s.groww_api_key:
         return None
@@ -402,6 +473,17 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--reviewer", choices=("none", "heuristic", "claude", "auto"), default="auto",
                     help="signal reviewer: claude costs money; heuristic is a free rule-based baseline")
     rp.set_defaults(func=cmd_replay)
+    iv = sub.add_parser("invest", help="daily delivery investing (index_trend or momentum); paper unless --live")
+    iv.add_argument("--live", action="store_true")
+    iv.add_argument("--i-understand-the-risks", action="store_true")
+    iv.set_defaults(func=cmd_invest)
+    ib = sub.add_parser("invest-backtest", help="backtest a daily delivery strategy over many years, after costs and tax")
+    ib.add_argument("--strategy", choices=("index_trend", "momentum"), default="index_trend")
+    ib.add_argument("--years", type=float, default=15)
+    ib.add_argument("--end", help="YYYY-MM-DD (default: today)")
+    ib.add_argument("--cash-yield", type=float, default=6.0, help="yearly return on idle cash, %%")
+    ib.add_argument("--no-tax", action="store_true")
+    ib.set_defaults(func=cmd_invest_backtest)
     lv = sub.add_parser("live", help="trade live on Groww (requires static IP + explicit opt-in)")
     lv.add_argument("--i-understand-the-risks", action="store_true")
     lv.set_defaults(func=cmd_live)

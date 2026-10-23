@@ -1,7 +1,8 @@
 # systemd unit for the trading worker on a Mumbai VPS with a static IP.
 # Install: sudo cp deploy/thunderbot.service /etc/systemd/system/ && sudo systemctl daemon-reload
-# The worker idles until "Start" on the dashboard (or `thunderbot start`); "Stop" flattens and idles again.
-# Paper first:  ExecStart=... thunderbot paper   (live Groww prices, simulated orders)
+# The worker idles until "Start" on the dashboard (or `thunderbot start`); "Stop" sells everything and idles.
+# Default: daily delivery investing on paper (TB_INVEST_STRATEGY=index_trend or momentum). Evidence: reports/.
+# Intraday instead: ExecStart=... thunderbot paper   (most intraday traders lose money; see the report)
 # Live later:   ExecStart=... thunderbot live --i-understand-the-risks   (plus TB_LIVE_TRADING_ENABLED=true)
 [Unit]
 Description=Thunderbot trading worker
@@ -14,7 +15,7 @@ User=thunderbot
 Group=thunderbot
 WorkingDirectory=/opt/thunderbot/worker
 EnvironmentFile=/etc/thunderbot.env
-ExecStart=/opt/thunderbot/venv/bin/thunderbot paper
+ExecStart=/opt/thunderbot/venv/bin/thunderbot invest
 Restart=on-failure
 RestartSec=30
 StateDirectory=thunderbot

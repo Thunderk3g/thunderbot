@@ -10,7 +10,16 @@ export type Heartbeat = {
   positions?: Position[]; realized_pnl: number; unrealized_pnl?: number; trades_today?: number; halted: boolean;
   halt_reason?: string; market_open?: boolean; capital?: number; llm_enabled?: boolean; reviewer?: string;
   trading?: "running" | "stopped"; feed?: { source: string; ok: boolean; message: string } | null;
+  style?: "intraday" | "invest"; portfolio?: Portfolio;
 };
+
+export type Holding = { symbol: string; qty: number; avg_price: number; ltp: number; value: number; weight: number; pnl: number; since: string };
+export type Portfolio = {
+  value: number; cash: number; capital: number; invested_pct: number; holdings: Holding[]; next_rebalance: string;
+  last_run: string | null; run_at: string; rebalance: string; realized: number;
+  filter: { index: number | null; sma: number | null; above: boolean } | null;
+};
+export type DailyStrategy = { name: string; label: string; description: string; params: ParamSpec[] };
 
 export type ParamSpec = { name: string; label: string; type: "int" | "float"; min: number; max: number; step: number; default: number };
 export type StrategyInfo = { name: string; label: string; description: string; params: ParamSpec[] };
@@ -36,6 +45,7 @@ export type EffectiveSettings = {
 export type Control = {
   kill_switch?: boolean; paused?: boolean; trading_enabled?: boolean; login_confirmed_for?: string; heartbeat?: Heartbeat;
   effective_settings?: EffectiveSettings; settings_overrides?: Record<string, unknown>; strategy_catalog?: StrategyInfo[];
+  daily_catalog?: DailyStrategy[]; invest_settings?: { strategy: string; params: Record<string, number> };
 };
 
 export type Signal = {
@@ -84,7 +94,18 @@ export type SweepResult = {
   strategy: string; axes: { name: string; values: number[] }[]; rows: SweepRow[]; split_date: string;
   in_sample_fraction: number; data_note: string; robust_count: number;
 };
+export type InvestMetrics = {
+  cagr_pct: number; total_return_pct: number; volatility_pct: number; sharpe: number | null; max_drawdown_pct: number;
+  longest_underwater_days: number; final_value: number; years: number;
+};
+export type InvestResult = {
+  metrics: InvestMetrics & { trades: number; costs: number; taxes: number; turnover_per_year: number; time_invested_pct: number;
+    rebalances: number; benchmark: InvestMetrics };
+  yearly: { year: number; strategy_pct: number; benchmark_pct: number | null }[];
+  equity: { date: string; value: number; benchmark: number }[];
+  strategy: string; strategy_params: Record<string, number>; data_note: string; years: number; capital: number;
+};
 export type Job = {
-  id: string; created_at: string; kind: "backtest" | "sweep"; params: Record<string, unknown>;
-  status: "queued" | "running" | "done" | "error"; progress: number; result?: BacktestResult | SweepResult | null; error?: string | null;
+  id: string; created_at: string; kind: "backtest" | "sweep" | "invest"; params: Record<string, unknown>;
+  status: "queued" | "running" | "done" | "error"; progress: number; result?: BacktestResult | SweepResult | InvestResult | null; error?: string | null;
 };

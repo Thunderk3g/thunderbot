@@ -22,6 +22,7 @@ web cockpit. Built from the blueprint in [`docs/research-report.md`](docs/resear
 
 | Tab | What it does |
 |---|---|
+| **Lab: Invest (daily)** | Test the daily delivery strategies (Nifty trend, Momentum) over up to 18 years, after Groww charges and capital-gains tax, against holding the Nifty ETF. |
 | **Lab data** | Backtests and sweeps on free Yahoo Finance NSE prices (last ~60 days of 5-minute bars), practice data, saved CSVs, or Groww history. |
 | **Today** | Session P&L with an intraday curve, open positions with a live stop-to-target gauge, the signal feed with reviewer verdicts and how each signal played out, activity, and pause/resume. **Start paper trading** / hold-to-stop in the rail, plus the Groww connection status. |
 | **Results** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |

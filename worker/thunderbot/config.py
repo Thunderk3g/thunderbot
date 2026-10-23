@@ -131,6 +131,8 @@ class Settings:
     groww_totp_secret: str | None = None
     groww_api_secret: str | None = None
     expected_static_ip: str | None = None
+    invest_strategy: str = "index_trend"  # daily delivery strategy for `thunderbot invest`: index_trend | momentum
+    invest_at: str = "15:10"  # IST time of the daily decision (prices then stand in for the close)
     feed: str = "yahoo"  # price source for paper trading: groww (official, paid plan) | yahoo (free, can lag)
     live_trading_enabled: bool = False
     allow_mtf_api: bool = False
@@ -185,6 +187,8 @@ class Settings:
             allow_mtf_api=_env_bool("TB_ALLOW_MTF_API", False),
             require_login_confirmation=_env_bool("TB_REQUIRE_LOGIN_CONFIRMATION", True),
             feed=(_env("TB_FEED", cls.feed) or cls.feed).strip().lower(),
+            invest_strategy=(_env("TB_INVEST_STRATEGY", cls.invest_strategy) or cls.invest_strategy).strip().lower(),
+            invest_at=_env("TB_INVEST_AT", cls.invest_at) or cls.invest_at,
             data_dir=_env("TB_DATA_DIR", cls.data_dir) or cls.data_dir,
             backtest_data_dir=_env("TB_BACKTEST_DATA_DIR", cls.backtest_data_dir) or cls.backtest_data_dir,
             supabase_url=_env("SUPABASE_URL"),

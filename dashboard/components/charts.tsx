@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  BaselineSeries, ColorType, HistogramSeries, createChart,
+  BaselineSeries, ColorType, HistogramSeries, LineSeries, createChart,
   type IChartApi, type ISeriesApi, type MouseEventParams, type Time, type UTCTimestamp,
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
@@ -134,6 +134,52 @@ export function PnlCurve({ points, intraday = false, height = 220, label = "P&L"
   }, [points, intraday, theme]);
 
   return <div className="chart" style={{ height }} ref={ref}>{node}</div>;
+}
+
+/** Portfolio value against a benchmark, both from the same starting capital. */
+export function GrowthChart({ points, height = 260, label = "Strategy", benchLabel = "Nifty ETF" }: {
+  points: { time: string; value: number; benchmark: number }[]; height?: number; label?: string; benchLabel?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const theme = useThemeVersion();
+  const [tip, setTip] = useState<{ x: number; y: number; time: string; a: number; b: number } | null>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const opts = baseOptions(false);
+    const chart = createChart(el, { ...opts, localization: { priceFormatter: (p: number) => compactInr(p).replace("−", "-") } });
+    const main = chart.addSeries(LineSeries, { color: cssVar("--gain"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const bench = chart.addSeries(LineSeries, { color: cssVar("--ink-soft"), lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+    main.setData(dedupe(points.map((p) => ({ time: toTime(p.time, false), value: p.value }))));
+    bench.setData(dedupe(points.map((p) => ({ time: toTime(p.time, false), value: p.benchmark }))));
+    chart.timeScale().fitContent();
+    const onMove = (p: MouseEventParams) => {
+      const a = p.seriesData.get(main) as { value?: number } | undefined;
+      const b = p.seriesData.get(bench) as { value?: number } | undefined;
+      if (!p.point || !p.time || a?.value === undefined || b?.value === undefined) return setTip(null);
+      setTip({ x: Math.min(Math.max(p.point.x + 12, 0), el.clientWidth - 170), y: Math.max(p.point.y - 56, 0),
+        time: formatTime(p.time, false), a: a.value, b: b.value });
+    };
+    chart.subscribeCrosshairMove(onMove);
+    return () => { chart.unsubscribeCrosshairMove(onMove); chart.remove(); };
+  }, [points, theme]);
+
+  return (
+    <div className="chart" style={{ height }} ref={ref}>
+      {tip && (
+        <div className="chart-tip" style={{ left: tip.x, top: tip.y }}>
+          <div>{tip.time}</div>
+          <div><strong>{inrFull(tip.a)}</strong> {label}</div>
+          <div>{inrFull(tip.b)} {benchLabel}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function inrFull(n: number) {
+  return `₹${Math.round(n).toLocaleString("en-IN")}`;
 }
 
 /** Daily P&L bars, colored by sign (diverging blue/red). */

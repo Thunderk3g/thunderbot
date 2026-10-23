@@ -41,7 +41,8 @@ function workerState(control?: Control): { on: boolean; title: string; detail: s
   if (hb.feed && !hb.feed.ok) return { on: false, title: hb.feed.source === "yahoo" ? "No prices from Yahoo" : "Groww not connected", detail: "See the notice on Today." };
   if (hb.halted) return { on: false, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
   if (control?.paused) return { on: true, title: "Paused", detail: "Managing open trades, taking no new ones." };
-  if (hb.market_open === false) return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
+  if (hb.market_open === false && hb.style !== "invest") return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
+  if (hb.style === "invest") return { on: true, title: `Investing (${hb.mode})`, detail: `Acts daily at ${hb.portfolio?.run_at ?? "15:10"}. Updated ${ago(hb.wall_at)}.` };
   return { on: true, title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
 }
 

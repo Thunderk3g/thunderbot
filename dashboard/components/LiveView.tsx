@@ -28,6 +28,10 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
   const feedDown = hb?.feed && !hb.feed.ok ? hb.feed.message : null;
   const notStarted = hb && alive && hb.mode !== "replay" && !trading;
 
+  if (hb?.style === "invest" && hb.portfolio) {
+    return <InvestToday state={state} act={act} alive={alive} feedDown={feedDown} notStarted={!!notStarted} trading={trading} />;
+  }
+
   const summary = !closed && !positions.length
     ? "Nothing traded yet today."
     : <>after costs, from {plural(closed, "closed trade")}.{" "}
@@ -113,6 +117,80 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
           <Section title="Engine log">
             <EngineLog events={events} />
           </Section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STRATEGY_NAME: Record<string, string> = { index_trend: "Nifty trend (ETF or cash)", momentum: "Momentum top stocks" };
+
+function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
+  state: LiveState; act: (a: string) => Promise<void>; alive: boolean; feedDown: string | null; notStarted: boolean; trading: boolean;
+}) {
+  const { control, events } = state;
+  const hb = control.heartbeat!;
+  const p = hb.portfolio!;
+  const gain = p.value - p.capital;
+  const f = p.filter;
+  const nextDay = new Date(`${p.next_rebalance}T12:00:00+05:30`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+  return (
+    <div className="page">
+      <div className="notices">
+        <AnimatePresence initial={false}>
+          {feedDown && <Notice key="feed" kind="stop">No prices from {hb.feed?.source === "yahoo" ? "Yahoo" : "Groww"}, so nothing can trade. {feedDown}</Notice>}
+          {notStarted && (
+            <Notice key="start" kind="info" action={<Button size="sm" variant="primary" onClick={() => act("start")}>Start {hb.mode === "live" ? "live" : "paper"} investing</Button>}>
+              Not investing. {hb.mode === "live" ? "Live mode buys real shares on Groww." : "Paper mode uses live prices; the trades are simulated."} It acts once a day at {p.run_at} IST.
+            </Notice>
+          )}
+          {control.paused && trading && (
+            <Notice key="pause" kind="caution" action={<Button size="sm" onClick={() => act("resume")}>Resume</Button>}>Paused: the holdings stay, and no trades happen.</Notice>
+          )}
+          {!alive && <Notice key="off" kind="caution">The worker hasn&apos;t reported since {dayTime(hb.wall_at ?? hb.at)}.</Notice>}
+        </AnimatePresence>
+      </div>
+
+      <section aria-label="Portfolio">
+        <div className={`hero-figure ${tone(gain)}`}><AnimatedNumber value={p.value} format={(n) => inr(n)} /></div>
+        <p className="hero-line">
+          <strong className={tone(gain)}>{signedInr(gain)}</strong> ({((gain / p.capital) * 100).toFixed(1)}%) since the start with {inr(p.capital)}.{" "}
+          {p.invested_pct.toFixed(0)}% invested, {inr(p.cash)} in cash. Next check: {nextDay} at {p.run_at}.
+        </p>
+        {f?.index && f.sma && (
+          <p className="small soft" style={{ marginTop: 10 }}>
+            Nifty {num(f.index, 0)} is {f.above ? "above" : "below"} its 200-day average ({num(f.sma, 0)}), so the strategy {f.above ? "can hold shares" : "stays in cash"}.
+          </p>
+        )}
+      </section>
+
+      <div className="split">
+        <div className="page" style={{ gap: 40 }}>
+          <Section title="Holdings" aside={<p>{p.holdings.length} {p.holdings.length === 1 ? "position" : "positions"}</p>}>
+            {!p.holdings.length ? <Empty title="All cash.">Holdings appear here after the next check, if the market filter allows it.</Empty> : (
+              <div className="table-wrap"><table>
+                <thead><tr><th>Stock</th><th className="num">Qty</th><th className="num">Avg</th><th className="num">Price</th><th className="num">Weight</th><th className="num">P&amp;L</th></tr></thead>
+                <tbody>{p.holdings.map((h) => (
+                  <tr key={h.symbol}><td className="ticker">{h.symbol}</td><td className="num">{h.qty}</td><td className="num">{num(h.avg_price)}</td>
+                    <td className="num">{num(h.ltp)}</td><td className="num">{h.weight.toFixed(1)}%</td><td className={`num ${tone(h.pnl)}`}>{signedInr(h.pnl)}</td></tr>
+                ))}</tbody>
+              </table></div>
+            )}
+          </Section>
+          <Section title="How it's set up" aside={control.paused
+            ? <Button size="sm" variant="quiet" onClick={() => act("resume")}>Resume</Button>
+            : <Button size="sm" variant="quiet" onClick={() => act("pause")}>Pause</Button>}>
+            <dl className="facts">
+              <dt>Strategy</dt><dd>{STRATEGY_NAME[hb.strategy ?? ""] ?? hb.strategy}</dd>
+              <dt>Checks</dt><dd>Every trading day at {p.run_at}; trades only on {p.rebalance === "monthly" ? "the last trading day of the month" : p.rebalance} (or when empty)</dd>
+              <dt>Prices</dt><dd>{hb.feed?.source === "yahoo" ? "Yahoo Finance (free)" : "Groww"}{hb.feed && !hb.feed.ok ? ", not connected" : ""}</dd>
+              <dt>Orders</dt><dd className={hb.mode === "live" ? "loss" : ""}>{hb.mode === "live" ? "Real delivery (CNC) orders on Groww" : "Simulated (paper), with Groww charges"}</dd>
+              <dt>Realized P&amp;L</dt><dd className={tone(p.realized)}>{signedInr(p.realized)}</dd>
+            </dl>
+          </Section>
+        </div>
+        <div className="page" style={{ gap: 40 }}>
+          <Section title="Engine log"><EngineLog events={events} /></Section>
         </div>
       </div>
     </div>

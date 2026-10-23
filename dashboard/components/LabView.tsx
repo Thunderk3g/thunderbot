@@ -4,14 +4,16 @@ import { AnimatePresence, motion } from "motion/react";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { dayTime, inr, num, pct, signedInr } from "@/lib/format";
-import type { BacktestResult, Control, Job, ParamSpec, StrategyInfo, SweepResult, SweepRow } from "@/lib/types";
+import type { BacktestResult, Control, InvestResult, Job, ParamSpec, StrategyInfo, SweepResult, SweepRow } from "@/lib/types";
 import { post, usePoll } from "@/lib/usePoll";
 import { PnlCurve } from "./charts";
+import InvestLab, { InvestResultView, ModeSwitch, NoResult } from "./InvestLab";
 import { Button, ChipsInput, Empty, Figures, Panel, Progress, Section, Segmented, SliderField, spring } from "./ui";
 
 type Kind = "backtest" | "sweep";
 type Source = "yahoo" | "demo" | "csv" | "groww";
 const SOURCE_NAME: Record<string, string> = { yahoo: "Yahoo Finance", demo: "practice data", csv: "saved candles", groww: "Groww history" };
+const DAILY_NAME: Record<string, string> = { index_trend: "Nifty trend", momentum: "Momentum" };
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
 
 function isoDaysAgo(days: number): string {
@@ -29,6 +31,45 @@ function sweepValues(p: ParamSpec, center: number): string {
 }
 
 export default function LabView({ control, onApplied }: { control?: Control; onApplied: () => void }) {
+  const [mode, setMode] = useState<"invest" | "intraday">("invest");
+  const [investJob, setInvestJob] = useState<string | null>(null);
+  if (mode === "invest") {
+    const useStrategy = async (r: InvestResult) => {
+      await post("/api/control", { action: "invest_settings", strategy: r.strategy, params: r.strategy_params });
+    };
+    return (
+      <div className="page">
+        <LabHeader mode={mode} setMode={setMode} />
+        <div className="split form">
+          <div>
+            <InvestLab control={control} onJob={setInvestJob} />
+            <div style={{ marginTop: 28 }}><History selected={investJob} onSelect={setInvestJob} kinds={["invest"]} /></div>
+          </div>
+          <div>{investJob ? <JobView id={investJob} onApply={async () => {}} onUseInvest={useStrategy} /> : <NoResult />}</div>
+        </div>
+      </div>
+    );
+  }
+  return <IntradayLab control={control} onApplied={onApplied} mode={mode} setMode={setMode} />;
+}
+
+function LabHeader({ mode, setMode }: { mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
+      <div>
+        <h1>Lab</h1>
+        <p className="soft" style={{ marginTop: 6, maxWidth: "64ch" }}>
+          {mode === "invest"
+            ? "Test a slow, daily strategy over up to 18 years of real NSE prices, after Groww charges and capital-gains tax. Daily strategies have far stronger evidence than intraday ones."
+            : "Test an intraday strategy on past prices with the same code that trades. A sweep tries several settings, picks the best on the first 70% of the history, then checks it on the last 30%, which it never saw."}
+        </p>
+      </div>
+      <ModeSwitch value={mode} onChange={setMode} />
+    </div>
+  );
+}
+
+function IntradayLab({ control, onApplied, mode, setMode }: { control?: Control; onApplied: () => void; mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void }) {
   const catalog = control?.strategy_catalog ?? [];
   const eff = control?.effective_settings;
   const [kind, setKind] = useState<Kind>("backtest");
@@ -83,18 +124,17 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
   };
 
   if (!catalog.length) {
-    return <Empty title="The strategy list hasn't loaded.">It's published by the worker. Start <code>thunderbot serve</code> locally, or <code>thunderbot jobs</code> on the server.</Empty>;
+    return (
+      <div className="page">
+        <LabHeader mode={mode} setMode={setMode} />
+        <Empty title="The strategy list hasn't loaded.">It's published by the worker. Start <code>thunderbot serve</code> locally, or <code>thunderbot jobs</code> on the server.</Empty>
+      </div>
+    );
   }
 
   return (
     <div className="page">
-      <div>
-        <h1>Lab</h1>
-        <p className="soft" style={{ marginTop: 6, maxWidth: "64ch" }}>
-          Test a strategy on past prices with the same code that trades. A sweep tries several settings, picks the best on the first 70% of the history,
-          then checks it on the last 30%, which it never saw.
-        </p>
-      </div>
+      <LabHeader mode={mode} setMode={setMode} />
       <div className="split form">
         <div>
           <Panel>
@@ -153,7 +193,7 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
               </Button>
             </div>
           </Panel>
-          <History selected={jobId} onSelect={setJobId} />
+          <div style={{ marginTop: 28 }}><History selected={jobId} onSelect={setJobId} kinds={["backtest", "sweep"]} /></div>
         </div>
         <div>{jobId ? <JobView id={jobId} onApply={apply} /> : <Empty title="Results appear here.">Pick a strategy and run a backtest on real prices from Yahoo. Practice data is only for learning the tools.</Empty>}</div>
       </div>
@@ -161,8 +201,9 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
   );
 }
 
-function History({ selected, onSelect }: { selected: string | null; onSelect: (id: string) => void }) {
-  const { data } = usePoll<Job[]>("/api/jobs", 4000);
+function History({ selected, onSelect, kinds }: { selected: string | null; onSelect: (id: string) => void; kinds: Job["kind"][] }) {
+  const { data: all } = usePoll<Job[]>("/api/jobs", 4000);
+  const data = all?.filter((j) => kinds.includes(j.kind));
   if (!data?.length) return null;
   const status = (j: Job) => j.status === "running" ? `${Math.round(Number(j.progress) * 100)}%` : j.status === "done" ? "done" : j.status === "error" ? "failed" : "waiting";
   return (
@@ -171,7 +212,9 @@ function History({ selected, onSelect }: { selected: string | null; onSelect: (i
         {data.map((j) => (
           <button key={j.id} type="button" className="row-button" onClick={() => onSelect(j.id)} aria-current={selected === j.id}>
             <div className="row small" style={selected === j.id ? { background: "var(--wash-strong)" } : undefined}>
-              <span className="grow trunc"><strong>{String(j.params.strategy ?? "")}</strong> {j.kind} on {SOURCE_NAME[String(j.params.data)] ?? String(j.params.data)}</span>
+              <span className="grow trunc">{j.kind === "invest"
+                ? <><strong>{DAILY_NAME[String(j.params.strategy)] ?? String(j.params.strategy)}</strong> over {String(j.params.years ?? 15)} years</>
+                : <><strong>{String(j.params.strategy ?? "")}</strong> {j.kind} on {SOURCE_NAME[String(j.params.data)] ?? String(j.params.data)}</>}</span>
               <span className="time">{dayTime(j.created_at)}</span>
               <span className={j.status === "error" ? "loss" : "soft"} style={{ width: 52, textAlign: "right" }}>{status(j)}</span>
             </div>
@@ -182,20 +225,24 @@ function History({ selected, onSelect }: { selected: string | null; onSelect: (i
   );
 }
 
-function JobView({ id, onApply }: { id: string; onApply: (sp: Record<string, number>) => Promise<void> }) {
+function JobView({ id, onApply, onUseInvest }: { id: string; onApply: (sp: Record<string, number>) => Promise<void>; onUseInvest?: (r: InvestResult) => Promise<void> }) {
   const [interval, setIntervalMs] = useState(1000);
   const { data: job } = usePoll<Job>(`/api/jobs?id=${id}`, interval);
   useEffect(() => setIntervalMs(job && (job.status === "done" || job.status === "error") ? 60_000 : 1000), [job]);
   if (!job || job.status === "queued" || job.status === "running") {
     return (
       <div>
-        <h2>{!job || job.status === "queued" ? "Waiting for the worker" : job.kind === "sweep" ? "Running the sweep" : "Running the backtest"}</h2>
+        <h2>{!job || job.status === "queued" ? "Waiting for the worker" : job.kind === "sweep" ? "Running the sweep" : job.kind === "invest" ? "Testing over the years" : "Running the backtest"}</h2>
         <div style={{ margin: "14px 0 10px" }}><Progress value={Number(job?.progress) || 0.03} /></div>
         <p className="small soft">{job?.status === "queued" ? "Experiments run on the worker. If this doesn't start, check thunderbot serve or thunderbot jobs is running." : "Same code as live trading, replayed over past candles."}</p>
       </div>
     );
   }
   if (job.status === "error") return <div className="notice stop"><span className="grow">The experiment failed: {job.error}</span></div>;
+  if (job.kind === "invest") {
+    const r = job.result as InvestResult;
+    return <InvestResultView r={r} onUse={onUseInvest ? () => onUseInvest(r) : undefined} />;
+  }
   return job.kind === "sweep" ? <SweepView r={job.result as SweepResult} onApply={onApply} /> : <BacktestView r={job.result as BacktestResult} onApply={onApply} />;
 }
 

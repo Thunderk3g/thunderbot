@@ -152,7 +152,10 @@ class JobRunner:
         """Let the dashboard's Lab render even when only the job runner is up."""
         from .strategy import catalog
 
+        from .daily import DAILY_CATALOG
+
         self.store.set_control("strategy_catalog", catalog())
+        self.store.set_control("daily_catalog", DAILY_CATALOG)
         control = self.store.get_control()
         if "effective_settings" not in control:
             new, rejected = self.base.with_overrides(control.get("settings_overrides") or {})
@@ -224,7 +227,41 @@ class JobRunner:
             return self.backtest(params, progress)
         if kind == "sweep":
             return self.sweep(params, progress)
+        if kind == "invest":
+            return self.invest(params, progress)
         raise JobError(f"unknown job kind {kind!r}")
+
+    def invest(self, params: dict[str, Any], progress) -> dict[str, Any]:
+        """Daily-bar delivery strategy over many years, after Indian costs and capital-gains tax."""
+        from . import daily
+
+        name = params.get("strategy", "index_trend")
+        try:
+            strat = daily.build_daily(name, params.get("strategy_params"))
+        except ValueError as e:
+            raise JobError(str(e)) from e
+        years = min(max(int(params.get("years") or 15), 3), 18)
+        capital = min(max(float(params.get("capital") or 500_000), 10_000), 1e9)
+        end = now_ist().date()
+        start = end - timedelta(days=int(years * 365.25))
+        progress(0.1)
+        symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *getattr(strat, "symbols", []),
+                                      getattr(strat, "asset", daily.BENCHMARK)]))
+        prices = daily.load_prices(symbols, start - timedelta(days=420), end,
+                                   cache_dir=self.base.data_path / "cache" / "daily")
+        progress(0.6)
+        res = daily.backtest(strat, prices, start, end, capital=capital,
+                             tax=daily.CapitalGainsTax() if params.get("tax", True) else None,
+                             cash_yield_pct=float(params.get("cash_yield_pct", 6.0)))
+        note = ("Daily Yahoo Finance prices, split- and dividend-adjusted, with known bad ticks repaired. "
+                "Costs: Groww delivery charges, STT, stamp duty, GST, DP and 0.05% slippage per side. "
+                "Tax: 20% on gains held up to 12 months, 12.5% above Rs 1.25 lakh a year after that. "
+                "Idle cash earns 6% a year (a liquid fund). The benchmark is NIFTYBEES held throughout, before tax.")
+        if name == "momentum":
+            note += (" WARNING: the stock list is today's Nifty 100, so stocks that fell out of the index are missing. "
+                     "That survivorship bias inflates the result by several points a year.")
+        return {**daily.result_payload(res), "strategy": name, "strategy_params": params.get("strategy_params") or {},
+                "data_note": note, "years": years, "capital": capital}
 
     def backtest(self, params: dict[str, Any], progress) -> dict[str, Any]:
         strategy, s, data, note = self._common(params)
