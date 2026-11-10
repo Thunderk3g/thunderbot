@@ -141,7 +141,7 @@ The long-run simulated evidence for trend following is strong (about 11% a year 
 | Item | Return | Worst drawdown | Period | Type | Source |
 |---|---|---|---|---|---|
 | SG Trend Index (10 largest trend CTAs) | 4.9% a year | — | Jan 2000 - May 2025 | Live index of funds | [Man Group, "Trend Following and Drawdowns: Is This Time Different?"](https://www.man.com/insights/is-this-time-different) (attribution from search summary) |
-| SG Trend Index | +27% | — | 2022 | Live | [Man Group](https://www.man.com/insights/is-this-time-different) |
+| SG Trend Index | +27% | — | 2022 | Live | [Man Group](https://www.man.com/insights/is-this-time-different) (attribution from search summary; could be the [Meketa paper](https://meketa.com/wp-content/uploads/2025/12/MEKETA_Trend-Following.pdf)) |
 | SG Trend Index | About -18.7% over 12 months, the worst in the index's 25-year history | -18.7% (12-month) | 12 months to 30 Apr 2025 | Live | [Virtus AlphaSimplex via AdvisorAnalyst](https://advisoranalyst.com/?p=167192) |
 | SG Trend Index | +2.39% | — | Calendar 2025 | Live | [Top Traders Unplugged, Dec 2025 report](https://www.toptradersunplugged.com/trend-following-performance-report-december-2025/) |
 | SG Trend Index | +15.80% year to date | — | Jan - Sep 2026 | Live | [Top Traders Unplugged, Sep 2026 report](https://www.toptradersunplugged.com/trend-following-performance-report-september-2026/) |
@@ -192,7 +192,7 @@ Published Indian evidence for Nifty/gold rotation is thin and low-quality: a han
 - Conflict: the Multibagg summary's gold return of about 161% for 2015-26 looks far too low for a window that includes 2025 and is close to Momentum Lab's 156.5% for 2014-2024; the window is probably mislabelled. Do not use it. — [Multibagg](https://www.multibagg.ai/market-pulse/articles/nifty-gold-regime-backtest-buyhold-cmox4nfw9a1vymn0jn71nlb34); [Momentum Lab](https://momentumlab.substack.com/p/backtesting-dual-momentum-strategy)
 
 ### Inferences
-- **No Indian rotation result retrieved is live, audited, net of costs, or net of tax.** The 16-19% CAGR figures are upper bounds from favourable windows. On the reader's own cost and tax model, the plain 200-DMA rule lost about 0.4-1.4 points a year to costs and tax; a rotation with more switches and a gold leg taxed differently would lose more.
+- **No Indian rotation result retrieved is live, audited, net of costs, or net of tax.** The 16-19% CAGR figures are upper bounds from favourable windows. On the reader's own cost and tax model, tax took about 0.4 points a year off the plain 200-DMA rule (about 8.5% pre-tax to 8.07% after-tax) with only 30 trades in 15 years; a rotation with more switches and a gold leg taxed differently would lose more.
 - The Momentum Lab result (18.8% vs 12.1%) relies on gold being a strong alternative whenever Nifty was weak in 2014-2024. Gold alone made only 10.9% a year in that window, so the excess came from switching at good moments in one decade: about 10 years, perhaps 15-25 switches. That is too few independent decisions to distinguish skill from luck.
 - The repo's own finding that a 12-month absolute-momentum signal earned only 4.4% on Nifty (vs 10% buy-and-hold) shows slow GEM-style signals have failed on Indian equity specifically, because of the V-shaped 2009 and 2020 recoveries.
 
