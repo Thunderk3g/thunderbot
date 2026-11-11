@@ -74,7 +74,7 @@ class YahooMarketData:
     def __init__(self, exchange: str = "NSE", downloader: Downloader | None = None,
                  now_fn: Callable[[], datetime] = now_ist) -> None:
         self.exchange = exchange
-        self._download = downloader or _download
+        self._download = downloader  # a yfinance-style downloader (tests); None = Yahoo's chart endpoint directly
         self._now = now_fn
 
     def earliest(self, interval_minutes: int) -> datetime | None:
@@ -90,6 +90,12 @@ class YahooMarketData:
             start = floor
         if start >= end:
             return []
+        if self._download is None:
+            from .chart import fetch_candles
+
+            bars = fetch_candles(yahoo_ticker(symbol, self.exchange), interval_minutes, start, end)
+            out = [Candle(to_ist(ts), round(o, 2), round(h, 2), round(low, 2), round(c, 2), v) for ts, o, h, low, c, v in bars]
+            return [c for c in out if start <= c.ts < end]
         df = self._download(tickers=yahoo_ticker(symbol, self.exchange), start=start, end=end,
                             interval=YF_INTERVALS[interval_minutes], multi_level_index=False)
         return [c for c in frame_to_candles(df) if start <= c.ts < end]

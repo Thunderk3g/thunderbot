@@ -114,7 +114,10 @@ class LocalAPI:
         new, rejected = self.settings.with_overrides(overrides)
         self.store.set_control("effective_settings", {**new.public_view(), "rejected": rejected})
 
-    def write(self, table: str, body: Any) -> None:
+    UNIQUE = {"daily_runs": ("kind", "day")}  # mirrors the unique constraints in supabase/migrations
+
+    def write(self, table: str, body: Any, upsert: bool = True) -> bool:
+        """Insert rows. False (HTTP 409) when ``upsert`` is off and a unique key is already taken."""
         rows = body if isinstance(body, list) else [body]
         for row in rows:
             if not isinstance(row, dict):
@@ -123,17 +126,28 @@ class LocalAPI:
                 self.store.set_control(str(row["key"]), row.get("value"))
                 if row["key"] == "settings_overrides":
                     self.refresh_effective(row.get("value") or {})
-            else:
-                row.setdefault("id", new_id())
-                self.store.insert(table, row)
+                continue
+            key = self.UNIQUE.get(table)
+            if key and not upsert and self.store.select(table, {k: row.get(k) for k in key}, limit=1):
+                return False
+            row.setdefault("id", new_id())
+            self.store.insert(table, row)
+        return True
 
-    def patch(self, table: str, params: list[tuple[str, str]], body: dict[str, Any]) -> int:
+    def patch(self, table: str, params: list[tuple[str, str]], body: dict[str, Any]) -> list[dict[str, Any]]:
+        """Update the rows named by id=eq.<id> that also match every other filter. Returns the rows changed."""
         ids = [v.partition(".")[2] for k, v in params if k == "id" and v.startswith("eq.")]
         if not ids:
             raise ValueError("PATCH requires an id=eq.<id> filter")
+        others = [(k, v) for k, v in params if k != "id"]
+        changed = []
         for row_id in ids:
+            current = self.store.select(table, {"id": row_id}, limit=1)
+            if others and not (current and all(_match(current[0], c, e) for c, e in others)):
+                continue
             self.store.update(table, row_id, body)
-        return len(ids)
+            changed.append({**(current[0] if current else {"id": row_id}), **body})
+        return changed
 
 
 def make_handler(api: LocalAPI):
@@ -188,18 +202,32 @@ def make_handler(api: LocalAPI):
             if r is None:
                 return
             try:
-                api.write(r[0], self._body())
-                self._send(201)
+                upsert = "merge-duplicates" in (self.headers.get("Prefer") or "")
+                if api.write(r[0], self._body(), upsert=upsert):
+                    self._send(201)
+                else:
+                    self._send(409, {"message": "duplicate key value violates unique constraint"})
             except Exception as e:
                 self._send(400, {"message": str(e)})
+
+        def do_DELETE(self):
+            r = self._route()
+            if r is None:
+                return
+            ids = [v.partition(".")[2] for k, v in r[1] if k == "id" and v.startswith("eq.")]
+            api.store.delete(r[0], ids)
+            self._send(204)
 
         def do_PATCH(self):
             r = self._route()
             if r is None:
                 return
             try:
-                api.patch(r[0], r[1], self._body())
-                self._send(204)
+                changed = api.patch(r[0], r[1], self._body())
+                if "return=representation" in (self.headers.get("Prefer") or ""):
+                    self._send(200, changed)
+                else:
+                    self._send(204)
             except Exception as e:
                 self._send(400, {"message": str(e)})
 

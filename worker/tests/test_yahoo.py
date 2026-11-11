@@ -4,7 +4,13 @@ import pytest
 
 from thunderbot.clock import IST
 from thunderbot.jobs import DataLoader, JobError
-from thunderbot.yahoo import YahooFeed, YahooMarketData, YahooQuotes, frame_to_candles, yahoo_ticker
+from thunderbot.yahoo import (
+    YahooFeed,
+    YahooMarketData,
+    YahooQuotes,
+    frame_to_candles,
+    yahoo_ticker,
+)
 
 pd = pytest.importorskip("pandas")
 

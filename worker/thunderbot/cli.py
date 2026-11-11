@@ -193,12 +193,13 @@ def _run_paper_on_yahoo(s: Settings, store) -> int:
     return 0
 
 
-def _run_invest(s: Settings, mode: str) -> int:
+def _invest_runner(s: Settings, mode: str, store, scheduler: str = "worker"):
     """Daily delivery investing (see thunderbot/invest.py). Paper uses TB_FEED prices; live uses Groww."""
     from .clock import parse_hhmm
     from .invest import InvestRunner
+    from .llm.rebalance import build_rebalance_reviewer
+    from .notify import build_notifier
 
-    store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
     broker = None
     if mode == "live" or s.feed == "groww":
         from .broker.groww import GrowwBroker, GrowwLink
@@ -212,29 +213,66 @@ def _run_invest(s: Settings, mode: str) -> int:
         quotes, status = groww, link.status
         broker = groww if mode == "live" else None
     else:
-        from .yahoo import YahooFeed
+        from .chart import ChartQuotes
 
-        feed = YahooFeed(exchange=s.exchange)
-        quotes, status = feed.quotes, feed.status
-    runner = InvestRunner(store, quotes, s.clock(), s.capital, mode=mode, broker=broker, strategy=s.invest_strategy,
-                          run_at=parse_hhmm(s.invest_at), feed_status=status)
+        quotes = ChartQuotes()
+        status = quotes.status
+    return InvestRunner(store, quotes, s.clock(), s.capital, mode=mode, broker=broker, strategy=s.invest_strategy,
+                        run_at=parse_hhmm(s.invest_at), cutoff=parse_hhmm(s.invest_cutoff), feed_status=status,
+                        liquid_symbol=s.liquid_symbol, reviewer=build_rebalance_reviewer(s),
+                        notify=build_notifier(s.telegram_token, s.telegram_chat_id, s.ntfy_topic),
+                        scheduler=scheduler, tick_minutes=s.tick_minutes)
+
+
+def _run_invest(s: Settings, mode: str) -> int:
     from .daily import DAILY_CATALOG
 
+    store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    runner = _invest_runner(s, mode, store)
     store.set_control("daily_catalog", DAILY_CATALOG)
     runner.run_forever()
     return 0
 
 
+def _live_guard(args, s: Settings) -> str | None:
+    """Why live investing must not start, or None when every opt-in is in place."""
+    from .compliance import check_static_ip
+
+    if not args.i_understand_the_risks or not s.live_trading_enabled:
+        return "needs --i-understand-the-risks and TB_LIVE_TRADING_ENABLED=true."
+    ip = check_static_ip(s.expected_static_ip)
+    return None if ip.ok else ip.message
+
+
+def cmd_tick(args, s: Settings) -> int:
+    """One pass of the daily investing worker, then exit. For schedulers: cron, Task Scheduler, launchd,
+    GitHub Actions. State lives in Supabase when it is configured, so the dashboard sees the same account."""
+    from .serverless import publish_catalog, run_jobs
+    from .store import build_remote_store
+
+    mode = "live" if args.live else "paper"
+    if args.live and (problem := _live_guard(args, s)):
+        print(f"Refusing to invest live: {problem}", file=sys.stderr)
+        return 2
+    remote = bool(s.supabase_url and s.supabase_service_key)
+    store = build_remote_store(s.supabase_url, s.supabase_service_key) if remote else build_store(s.data_path, None, None)
+    try:
+        publish_catalog(s, store)
+        summary = _invest_runner(s, mode, store, scheduler="serverless").tick()
+        if not args.no_jobs:
+            summary["jobs"] = run_jobs(s, store, time.monotonic() + args.job_seconds)
+    except Exception as e:
+        log.exception("tick failed")
+        store.event("error", f"tick failed: {type(e).__name__}: {e}")
+        return 1
+    print(json.dumps(summary, indent=2, default=str))
+    return 0
+
+
 def cmd_invest(args, s: Settings) -> int:
     if args.live:
-        from .compliance import check_static_ip
-
-        if not args.i_understand_the_risks or not s.live_trading_enabled:
-            print("Refusing to invest live: needs --i-understand-the-risks and TB_LIVE_TRADING_ENABLED=true.", file=sys.stderr)
-            return 2
-        ip = check_static_ip(s.expected_static_ip)
-        if not ip.ok:
-            print(f"Refusing to invest live: {ip.message}", file=sys.stderr)
+        if problem := _live_guard(args, s):
+            print(f"Refusing to invest live: {problem}", file=sys.stderr)
             return 2
         return _run_invest(s, "live")
     return _run_invest(s, "paper")
@@ -246,16 +284,24 @@ def cmd_invest_backtest(args, s: Settings) -> int:
     strat = daily.build_daily(args.strategy, {})
     end = date.fromisoformat(args.end) if args.end else now_ist().date()
     start = end - timedelta(days=int(args.years * 365.25))
-    symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *getattr(strat, "symbols", [])]))
-    prices = daily.load_prices(symbols, start - timedelta(days=420), end, cache_dir=s.data_path / "cache" / "daily")
-    res = daily.backtest(strat, prices, start, end, capital=s.capital, tax=None if args.no_tax else daily.CapitalGainsTax(),
-                         cash_yield_pct=args.cash_yield)
+    twin = daily.no_timing_twin(strat)
+    symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *strat.universe(), *(twin.universe() if twin else [])]))
+    errors: dict[str, str] = {}
+    prices = daily.load_prices(symbols, start - timedelta(days=460), end, cache_dir=s.data_path / "cache" / "daily", errors=errors)
+    for sym, why in errors.items():
+        print(f"no data for {sym}: {why}", file=sys.stderr)
+    tax = None if args.no_tax else daily.CapitalGainsTax(slab_rate=s.slab_rate_pct / 100)
+    res = daily.backtest(strat, prices, start, end, capital=s.capital, tax=tax)
     m = res.metrics()
     bench = m.pop("benchmark")
     print(f"{args.strategy}: {start} to {end}, capital {s.capital:,.0f}, {'pre-tax' if args.no_tax else 'after tax'}")
     for k, v in m.items():
         print(f"  {k:>26}: {v}")
-    print("  benchmark (NIFTYBEES held, pre-tax):", {k: bench.get(k) for k in ("cagr_pct", "max_drawdown_pct", "sharpe")})
+    keys = ("cagr_pct", "cagr_after_exit_tax_pct", "max_drawdown_pct", "sharpe")
+    print("  benchmark (NIFTYBEES held):", {k: bench.get(k) for k in keys})
+    if twin is not None:
+        t = daily.backtest(twin, prices, start, end, capital=s.capital, tax=tax).metrics()
+        print("  same ETFs, equal parts, no timing:", {k: t.get(k) for k in keys})
     print("  year  strategy  benchmark")
     for y in res.yearly():
         print(f"  {y['year']}  {y['strategy_pct']:>7}%  {y['benchmark_pct']:>8}%")
@@ -293,7 +339,13 @@ def cmd_jobs(args, s: Settings) -> int:
     from .jobs import JobRunner
 
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
-    JobRunner(store, s, _groww_factory(s)).run_forever()
+    runner = JobRunner(store, s, _groww_factory(s))
+    if args.once:
+        runner.publish_catalog()
+        while runner.run_once():
+            pass
+        return 0
+    runner.run_forever()
     return 0
 
 
@@ -461,7 +513,9 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument("--no-jobs", action="store_true")
     sv.set_defaults(func=cmd_serve)
 
-    sub.add_parser("jobs", help="run dashboard research jobs (backtests, sweeps)").set_defaults(func=cmd_jobs)
+    jb = sub.add_parser("jobs", help="run dashboard research jobs (backtests, sweeps)")
+    jb.add_argument("--once", action="store_true", help="run what is queued, then exit")
+    jb.set_defaults(func=cmd_jobs)
 
     rp = sub.add_parser("replay", help="replay history through the real engine + paper broker (watch it on the dashboard)")
     rp.add_argument("--data", help="directory of <SYMBOL>.csv files (default: synthetic data)")
@@ -473,15 +527,20 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--reviewer", choices=("none", "heuristic", "claude", "auto"), default="auto",
                     help="signal reviewer: claude costs money; heuristic is a free rule-based baseline")
     rp.set_defaults(func=cmd_replay)
-    iv = sub.add_parser("invest", help="daily delivery investing (index_trend or momentum); paper unless --live")
+    tk = sub.add_parser("tick", help="one pass of daily investing, then exit (for cron, Task Scheduler, launchd, CI)")
+    tk.add_argument("--live", action="store_true")
+    tk.add_argument("--i-understand-the-risks", action="store_true")
+    tk.add_argument("--no-jobs", action="store_true", help="do not run queued research jobs afterwards")
+    tk.add_argument("--job-seconds", type=float, default=240, help="time budget for queued research jobs")
+    tk.set_defaults(func=cmd_tick)
+    iv = sub.add_parser("invest", help="daily delivery investing as a long-running worker; paper unless --live")
     iv.add_argument("--live", action="store_true")
     iv.add_argument("--i-understand-the-risks", action="store_true")
     iv.set_defaults(func=cmd_invest)
     ib = sub.add_parser("invest-backtest", help="backtest a daily delivery strategy over many years, after costs and tax")
-    ib.add_argument("--strategy", choices=("index_trend", "momentum"), default="index_trend")
+    ib.add_argument("--strategy", choices=("core_mix", "etf_trend", "etf_rank", "index_trend", "momentum"), default="core_mix")
     ib.add_argument("--years", type=float, default=15)
     ib.add_argument("--end", help="YYYY-MM-DD (default: today)")
-    ib.add_argument("--cash-yield", type=float, default=6.0, help="yearly return on idle cash, %%")
     ib.add_argument("--no-tax", action="store_true")
     ib.set_defaults(func=cmd_invest_backtest)
     lv = sub.add_parser("live", help="trade live on Groww (requires static IP + explicit opt-in)")

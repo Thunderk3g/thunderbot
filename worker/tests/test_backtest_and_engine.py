@@ -63,7 +63,7 @@ class TestBacktester:
 
     def test_metrics_on_synthetic_data(self, settings):
         settings.symbols = ["S1", "S2", "S3"]
-        data = synthetic_history(settings.symbols, date(2026, 1, 5), 20)
+        data = synthetic_history(settings.symbols, date(2026, 2, 2), 20)  # 20 weekdays with no NSE holiday
         m = Backtester(settings, OpeningRangeBreakout()).run(data).metrics()
         assert m["days"] == 20 and m["trades"] <= settings.max_trades_per_day * 20
         assert m["total_costs"] >= 0
