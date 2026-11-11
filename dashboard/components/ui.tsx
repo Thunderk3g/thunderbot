@@ -3,6 +3,7 @@
 import { AnimatePresence, animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "motion/react";
 import { X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import type { Slice } from "@/lib/assets";
 
 export const spring = { type: "spring" as const, stiffness: 420, damping: 36, mass: 0.8 };
 
@@ -61,11 +62,11 @@ export function Figures({ items }: { items: { label: string; value: ReactNode; t
   );
 }
 
-export function StatusDot({ on }: { on: boolean }) {
+export function StatusDot({ tone }: { tone: "on" | "off" | "idle" }) {
   const reduce = useReducedMotion();
   return (
-    <span className={`dot ${on ? "on" : "off"}`} aria-hidden>
-      {on && !reduce && (
+    <span className={`dot ${tone}`} aria-hidden>
+      {tone === "on" && !reduce && (
         <motion.span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--running)" }}
           animate={{ scale: [1, 2.2], opacity: [0.5, 0] }} transition={{ duration: 2, repeat: Infinity, ease: "easeOut" }} />
       )}
@@ -74,7 +75,7 @@ export function StatusDot({ on }: { on: boolean }) {
 }
 
 export function Button({ children, variant = "", size = "", onClick, disabled, type = "button", title, block }: {
-  children: ReactNode; variant?: "" | "primary" | "stop" | "quiet"; size?: "" | "sm"; onClick?: () => void;
+  children: ReactNode; variant?: "" | "primary" | "stop" | "quiet"; size?: "" | "sm" | "lg"; onClick?: () => void;
   disabled?: boolean; type?: "button" | "submit"; title?: string; block?: boolean;
 }) {
   return (
@@ -203,4 +204,28 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
 
 export function Skeleton({ height = 16, width = "100%" }: { height?: number; width?: number | string }) {
   return <div className="shimmer" style={{ height, width }} />;
+}
+
+/** One whole, split into what is held. The share is printed inside each part; the legend names the parts.
+ *  On first paint the parts fill in from the left, once: the screen's one load moment. */
+export function MixBar({ slices, caption }: { slices: Slice[]; caption?: string }) {
+  const reduce = useReducedMotion();
+  const label = slices.map((s) => `${s.name} ${s.pct.toFixed(0)}%`).join(", ");
+  return (
+    <div className="mix">
+      {caption && <p className="small soft">{caption}</p>}
+      <div className="mixbar" role="img" aria-label={label}>
+        {slices.map((s, i) => (
+          <motion.span key={s.key} className={s.kind} style={{ flexGrow: s.pct, flexBasis: 0 }} title={`${s.name}: ${s.pct.toFixed(1)}%`}
+            initial={reduce ? false : { scaleX: 0, opacity: 0 }} animate={{ scaleX: 1, opacity: 1 }}
+            transition={{ delay: 0.15 + i * 0.09, type: "spring", stiffness: 160, damping: 24 }}>
+            {s.pct >= 7 ? `${s.pct.toFixed(0)}%` : ""}
+          </motion.span>
+        ))}
+      </div>
+      <div className="mix-legend">
+        {slices.map((s) => <span key={s.key}><i className={`swatch ${s.kind}`} />{s.name}</span>)}
+      </div>
+    </div>
+  );
 }

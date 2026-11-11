@@ -21,8 +21,11 @@ export default function JournalView() {
 
   return (
     <div className="page">
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "space-between", alignItems: "center" }}>
-        <h1>Log</h1>
+      <div className="page-head">
+        <div>
+          <h1>Everything the bot did.</h1>
+          <p className="lede">Every check, order and warning, newest first. Problems are in red.</p>
+        </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Segmented label="Show" value={view} onChange={setView} options={[{ value: "events", label: "What happened" }, { value: "orders", label: "Orders" }]} />
           {view === "events" && (

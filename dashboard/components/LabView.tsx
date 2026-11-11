@@ -7,13 +7,12 @@ import { dayTime, inr, num, pct, signedInr } from "@/lib/format";
 import type { BacktestResult, Control, InvestResult, Job, ParamSpec, StrategyInfo, SweepResult, SweepRow } from "@/lib/types";
 import { post, usePoll, startJob } from "@/lib/usePoll";
 import { PnlCurve } from "./charts";
-import InvestLab, { InvestResultView, ModeSwitch, NoResult } from "./InvestLab";
+import InvestLab, { InvestResultView, ModeSwitch, NoResult, planName } from "./InvestLab";
 import { Button, ChipsInput, Empty, Figures, Panel, Progress, Section, Segmented, SliderField, spring } from "./ui";
 
 type Kind = "backtest" | "sweep";
 type Source = "yahoo" | "demo" | "csv" | "groww";
 const SOURCE_NAME: Record<string, string> = { yahoo: "Yahoo Finance", demo: "practice data", csv: "saved candles", groww: "Groww history" };
-const DAILY_NAME: Record<string, string> = { core_mix: "Steady mix", etf_trend: "Trend rotation", etf_rank: "Strongest ETFs", index_trend: "Nifty trend", momentum: "Momentum stocks" };
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
 
 function isoDaysAgo(days: number): string {
@@ -30,22 +29,32 @@ function sweepValues(p: ParamSpec, center: number): string {
   return [...new Set(vals)].join(", ");
 }
 
-export default function LabView({ control, onApplied }: { control?: Control; onApplied: () => void }) {
+export default function LabView({ control, onApplied, onUsed }: { control?: Control; onApplied: () => void; onUsed?: () => void }) {
   const [mode, setMode] = useState<"invest" | "intraday">("invest");
   const [investJob, setInvestJob] = useState<string | null>(null);
+  const [stage, setStage] = useState<"choose" | "test" | "use">("choose");
   if (mode === "invest") {
+    const inUse = control?.invest_settings ? JSON.stringify([control.invest_settings.strategy, control.invest_settings.params]) : undefined;
     const useStrategy = async (r: InvestResult) => {
       await post("/api/control", { action: "invest_settings", strategy: r.strategy, params: r.strategy_params });
+      onUsed?.();
     };
     return (
       <div className="page">
         <LabHeader mode={mode} setMode={setMode} />
+        <ol className="trail" aria-label="Steps">
+          <li className={stage !== "choose" ? "done" : ""} aria-current={stage === "choose" ? "step" : undefined}>Choose a plan</li>
+          <li className={stage === "use" ? "done" : ""} aria-current={stage === "test" ? "step" : undefined}>Test it on past years</li>
+          <li aria-current={stage === "use" ? "step" : undefined}>Use it</li>
+        </ol>
         <div className="split form">
           <div>
-            <InvestLab control={control} onJob={setInvestJob} />
-            <div style={{ marginTop: 28 }}><History selected={investJob} onSelect={setInvestJob} kinds={["invest"]} /></div>
+            <InvestLab control={control} onJob={(id) => { setInvestJob(id); setStage("test"); }} />
+            <div style={{ marginTop: 32 }}><History selected={investJob} onSelect={(id) => { setInvestJob(id); setStage("test"); }} kinds={["invest"]} /></div>
           </div>
-          <div>{investJob ? <JobView id={investJob} onApply={async () => {}} onUseInvest={useStrategy} /> : <NoResult />}</div>
+          <div>{investJob
+            ? <JobView id={investJob} onApply={async () => {}} onUseInvest={useStrategy} inUse={inUse} onDone={() => setStage("use")} />
+            : <NoResult />}</div>
         </div>
       </div>
     );
@@ -55,13 +64,13 @@ export default function LabView({ control, onApplied }: { control?: Control; onA
 
 function LabHeader({ mode, setMode }: { mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void }) {
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
+    <div className="page-head">
       <div>
-        <h1>Lab</h1>
-        <p className="soft" style={{ marginTop: 6, maxWidth: "64ch" }}>
+        <h1>{mode === "invest" ? "Choose a plan you can live with." : "Intraday research."}</h1>
+        <p className="lede">
           {mode === "invest"
-            ? "Test a slow, daily strategy over up to 17 years of real NSE prices, after Groww charges and capital-gains tax. Each result is shown next to simply holding the Nifty ETF, and next to holding the same ETFs with no timing at all."
-            : "Test an intraday strategy on past prices with the same code that trades. A sweep tries several settings, picks the best on the first 70% of the history, then checks it on the last 30%, which it never saw."}
+            ? "Each plan is a fixed rule. Test it on up to 17 years of real NSE prices, after Groww's charges and capital-gains tax, before you trust it with anything."
+            : "Test an intraday strategy on past prices with the same code that trades. These strategies lost money in our tests; this room is for research, not income."}
         </p>
       </div>
       <ModeSwitch value={mode} onChange={setMode} />
@@ -210,7 +219,7 @@ function History({ selected, onSelect, kinds }: { selected: string | null; onSel
           <button key={j.id} type="button" className="row-button" onClick={() => onSelect(j.id)} aria-current={selected === j.id}>
             <div className="row small" style={selected === j.id ? { background: "var(--wash-strong)" } : undefined}>
               <span className="grow trunc">{j.kind === "invest"
-                ? <><strong>{DAILY_NAME[String(j.params.strategy)] ?? String(j.params.strategy)}</strong> over {String(j.params.years ?? 15)} years</>
+                ? <><strong>{planName(String(j.params.strategy))}</strong> over {String(j.params.years ?? 15)} years</>
                 : <><strong>{String(j.params.strategy ?? "")}</strong> {j.kind} on {SOURCE_NAME[String(j.params.data)] ?? String(j.params.data)}</>}</span>
               <span className="time">{dayTime(j.created_at)}</span>
               <span className={j.status === "error" ? "loss" : "soft"} style={{ width: 52, textAlign: "right" }}>{status(j)}</span>
@@ -222,10 +231,14 @@ function History({ selected, onSelect, kinds }: { selected: string | null; onSel
   );
 }
 
-function JobView({ id, onApply, onUseInvest }: { id: string; onApply: (sp: Record<string, number>) => Promise<void>; onUseInvest?: (r: InvestResult) => Promise<void> }) {
+function JobView({ id, onApply, onUseInvest, inUse, onDone }: {
+  id: string; onApply: (sp: Record<string, number>) => Promise<void>; onUseInvest?: (r: InvestResult) => Promise<void>; inUse?: string; onDone?: () => void;
+}) {
   const [interval, setIntervalMs] = useState(1000);
   const { data: job } = usePoll<Job>(`/api/jobs?id=${id}`, interval);
-  useEffect(() => setIntervalMs(job && (job.status === "done" || job.status === "error") ? 60_000 : 1000), [job]);
+  const finished = !!job && (job.status === "done" || job.status === "error");
+  useEffect(() => setIntervalMs(finished ? 60_000 : 1000), [finished]);
+  useEffect(() => { if (job?.status === "done") onDone?.(); }, [job?.status, id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!job || job.status === "queued" || job.status === "running") {
     return (
       <div>
@@ -238,7 +251,7 @@ function JobView({ id, onApply, onUseInvest }: { id: string; onApply: (sp: Recor
   if (job.status === "error") return <div className="notice stop"><span className="grow">The experiment failed: {job.error}</span></div>;
   if (job.kind === "invest") {
     const r = job.result as InvestResult;
-    return <InvestResultView r={r} onUse={onUseInvest ? () => onUseInvest(r) : undefined} />;
+    return <InvestResultView r={r} onUse={onUseInvest ? () => onUseInvest(r) : undefined} inUse={inUse === JSON.stringify([r.strategy, r.strategy_params])} />;
   }
   return job.kind === "sweep" ? <SweepView r={job.result as SweepResult} onApply={onApply} /> : <BacktestView r={job.result as BacktestResult} onApply={onApply} />;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { Moon, OctagonX, Play, Sun } from "lucide-react";
+import { ChartLine, House, Layers, Moon, OctagonX, Play, ScrollText, Settings, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ago } from "@/lib/format";
 import { workerAlive, type Control, type EventRow, type Heartbeat, type LiveState } from "@/lib/types";
@@ -14,11 +14,11 @@ import SettingsView from "./SettingsView";
 import JournalView from "./JournalView";
 
 const PAGES = [
-  { id: "today", label: "Today" },
-  { id: "results", label: "Results" },
-  { id: "lab", label: "Lab" },
-  { id: "settings", label: "Settings" },
-  { id: "log", label: "Log" },
+  { id: "today", label: "Home", icon: House },
+  { id: "lab", label: "Plans", icon: Layers },
+  { id: "results", label: "Results", icon: ChartLine },
+  { id: "log", label: "Activity", icon: ScrollText },
+  { id: "settings", label: "Settings", icon: Settings },
 ] as const;
 type PageId = (typeof PAGES)[number]["id"];
 
@@ -30,24 +30,27 @@ export function tradingOn(control?: Control): boolean {
   return !!control && !control.kill_switch && !!control.trading_enabled;
 }
 
-function workerState(control?: Control): { on: boolean; title: string; detail: string } {
+type Tone = "on" | "off" | "idle";
+
+function workerState(control?: Control): { tone: Tone; title: string; detail: string } {
   const hb: Heartbeat | undefined = control?.heartbeat;
-  if (!hb) return { on: false, title: "No worker yet", detail: "Nothing has reported in. Wake the worker from Today." };
+  if (!hb) return { tone: "idle", title: "Not set up yet", detail: "Wake the worker from Home." };
   const serverless = hb.scheduler === "serverless";
+  const invest = hb.style === "invest";
   if (!workerAlive(hb)) {
     return serverless
-      ? { on: false, title: "Scheduler is silent", detail: `Last check ${ago(hb.wall_at ?? hb.at)}. The cron job isn't calling the worker.` }
-      : { on: false, title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
+      ? { tone: "off", title: "Scheduler is silent", detail: `Last check ${ago(hb.wall_at ?? hb.at)}.` }
+      : { tone: "off", title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
   }
-  if (hb.mode === "replay") return { on: true, title: "Running a replay", detail: `Updated ${ago(hb.wall_at)}.` };
-  if (control?.kill_switch) return { on: false, title: "Stopped", detail: "Everything is flat. Press Start to trade again." };
-  if (!control?.trading_enabled) return { on: false, title: "Not trading", detail: `Press Start to begin ${MODE_WORD[hb.mode] ?? hb.mode}.` };
-  if (hb.feed && !hb.feed.ok) return { on: false, title: hb.feed.source === "yahoo" ? "No prices from Yahoo" : "Groww not connected", detail: "See the notice on Today." };
-  if (hb.halted) return { on: false, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
-  if (control?.paused) return { on: true, title: "Paused", detail: "Managing open trades, taking no new ones." };
-  if (hb.market_open === false && hb.style !== "invest") return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
-  if (hb.style === "invest") return { on: true, title: `Investing (${hb.mode})`, detail: `Acts daily at ${hb.portfolio?.run_at ?? "15:10"}. Last check ${ago(hb.wall_at)}.` };
-  return { on: true, title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
+  if (hb.mode === "replay") return { tone: "on", title: "Running a replay", detail: `Updated ${ago(hb.wall_at)}.` };
+  if (control?.kill_switch) return { tone: "idle", title: "Stopped", detail: "Everything is sold. Press Start to go again." };
+  if (!control?.trading_enabled) return { tone: "idle", title: invest ? "Not investing yet" : "Not trading", detail: `Press Start to begin ${invest ? (hb.mode === "live" ? "live investing" : "paper investing") : MODE_WORD[hb.mode] ?? hb.mode}.` };
+  if (hb.feed && !hb.feed.ok) return { tone: "off", title: hb.feed.source === "yahoo" ? "No prices from Yahoo" : "Groww not connected", detail: "See the notice on Home." };
+  if (hb.halted) return { tone: "off", title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
+  if (control?.paused) return { tone: "idle", title: "Paused", detail: invest ? "Holdings stay; no trades happen." : "Managing open trades, taking no new ones." };
+  if (hb.market_open === false && !invest) return { tone: "on", title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
+  if (invest) return { tone: "on", title: `Investing (${hb.mode})`, detail: `Checks daily at ${hb.portfolio?.run_at ?? "15:10"} IST. Last heard ${ago(hb.wall_at)}.` };
+  return { tone: "on", title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
 }
 
 export default function App() {
@@ -74,70 +77,74 @@ export default function App() {
     live.refresh();
   };
 
-  const mode = control?.heartbeat?.mode === "live" ? "live" : "paper";
-  const tradeButton = (compact: boolean) => tradingOn(control)
-    ? <HoldButton block onConfirm={() => act("stop")}><OctagonX size={15} />{compact ? "Hold to stop" : "Hold to stop trading"}</HoldButton>
-    : <Button variant="primary" block onClick={() => act("start")}><Play size={15} />{compact ? "Start" : `Start ${mode} trading`}</Button>;
+  const tradeButton = tradingOn(control)
+    ? <HoldButton onConfirm={() => act("stop")}><OctagonX size={15} />Hold to stop</HoldButton>
+    : <Button variant="primary" onClick={() => act("start")}><Play size={15} />Start</Button>;
 
   return (
     <div className="frame">
-      <aside className="rail">
-        <div className="wordmark">Thunder<span>bot</span></div>
+      <header className="topbar">
+        <button type="button" className="wordmark" onClick={() => go("today")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0, color: "inherit" }} aria-label="Thunderbot, go to Home">
+          <Bolt />Thunderbot
+        </button>
         <nav className="nav" aria-label="Pages">
           {PAGES.map((p) => (
             <button key={p.id} aria-current={page === p.id ? "page" : undefined} onClick={() => go(p.id)}>
               {page === p.id && <motion.span layoutId="nav-mark" className="nav-mark" transition={spring} />}
-              {p.label}
+              <span>{p.label}</span>
             </button>
           ))}
         </nav>
-        <div className="rail-foot">
-          <div className="state">
-            <StatusDot on={state.on} />
+        <div className="bar-end">
+          <div className="state" title={state.detail}>
+            <StatusDot tone={state.tone} />
             <div><strong className={control?.heartbeat?.mode === "live" ? "loss" : ""}>{state.title}</strong><span className="soft">{state.detail}</span></div>
           </div>
-          {tradeButton(false)}
+          {control?.heartbeat && tradeButton}
           <ThemeToggle />
         </div>
-      </aside>
-
-      <header className="mobile-bar">
-        <div className="state">
-          <StatusDot on={state.on} />
-          <div><strong>{state.title}</strong></div>
-        </div>
-        <div style={{ width: 132 }}>{tradeButton(true)}</div>
       </header>
 
       <main className="content">
         {live.error && !live.data && (
           <div className="notice stop" style={{ marginBottom: 24 }}>
-            <span className="grow">The dashboard can&apos;t reach its database: {live.error}. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.</span>
+            <span className="grow">The dashboard can&apos;t reach its database: {live.error}. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the deployment&apos;s settings.</span>
           </div>
         )}
         <AnimatePresence mode="wait">
-          <motion.div key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
-            {page === "today" && <LiveView state={live.data} act={act} refresh={live.refresh} />}
+          <motion.div key={page} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
+            {page === "today" && <LiveView state={live.data} act={act} refresh={live.refresh} go={go} />}
             {page === "results" && <PerformanceView defaultMode={control?.heartbeat?.mode ?? "paper"} />}
-            {page === "lab" && <LabView control={control} onApplied={() => { live.refresh(); go("settings"); }} />}
-            {page === "settings" && <SettingsView control={control} refresh={live.refresh} />}
+            {page === "lab" && <LabView control={control} onApplied={() => { live.refresh(); go("settings"); }} onUsed={() => { live.refresh(); go("today"); }} />}
+            {page === "settings" && <SettingsView control={control} refresh={live.refresh} go={go} />}
             {page === "log" && <JournalView />}
           </motion.div>
         </AnimatePresence>
         <p className="foot">
           Thunderbot follows rules; it can&apos;t promise profit. A backtest shows what a rule did, not what it will do, and most
-          intraday strategies lose money after costs. Judge every change in the Lab and on the Results page. Charts use <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a> Lightweight Charts.
+          intraday strategies lose money after costs. Charts use <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a> Lightweight Charts.
         </p>
       </main>
 
       <nav className="tabbar" aria-label="Pages">
         {PAGES.map((p) => (
-          <button key={p.id} aria-current={page === p.id ? "page" : undefined} onClick={() => go(p.id)}>{p.label}</button>
+          <button key={p.id} aria-current={page === p.id ? "page" : undefined} onClick={() => go(p.id)}>
+            <p.icon size={19} aria-hidden />{p.label}
+          </button>
         ))}
       </nav>
 
       <Toasts events={live.data?.events ?? []} />
     </div>
+  );
+}
+
+/** The mark: a bolt, in the one accent the brand owns. */
+function Bolt() {
+  return (
+    <svg width="18" height="22" viewBox="0 0 18 22" aria-hidden>
+      <path d="M11 0 0 13h7l-2 9 13-14h-8z" fill="var(--bolt)" />
+    </svg>
   );
 }
 
@@ -154,8 +161,8 @@ function ThemeToggle() {
     setDark(!dark);
   };
   return (
-    <button type="button" className="btn quiet sm" onClick={flip} style={{ alignSelf: "flex-start" }}>
-      {dark ? <Sun size={14} /> : <Moon size={14} />}{dark ? "Light theme" : "Dark theme"}
+    <button type="button" className="icon-btn" onClick={flip} aria-label={dark ? "Switch to light theme" : "Switch to dark theme"} title={dark ? "Light theme" : "Dark theme"}>
+      {dark ? <Sun size={17} /> : <Moon size={17} />}
     </button>
   );
 }

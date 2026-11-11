@@ -109,6 +109,7 @@ def test_default_strategy_buys_the_three_etf_mix_and_records_the_plan(tmp_path):
     assert plan["target"]["GOLDBEES"] == 0.33 and plan["late"] is False
     hb = store.get_control()["heartbeat"]
     assert hb["portfolio"]["last_plan"]["orders"] and hb["scheduler"] == "worker" and hb["next_tick_by"]
+    assert hb["portfolio"]["target"]["GOLDBEES"] == 0.33 and hb["portfolio"]["signals"]["NIFTYBEES"]["above"] is True
 
 
 def test_a_price_jump_postpones_the_rebalance_until_prices_are_sane(tmp_path):

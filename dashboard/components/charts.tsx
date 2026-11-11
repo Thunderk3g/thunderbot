@@ -137,7 +137,7 @@ export function PnlCurve({ points, intraday = false, height = 220, label = "P&L"
 }
 
 /** Portfolio value against a benchmark, both from the same starting capital. */
-export function GrowthChart({ points, height = 260, label = "Strategy", benchLabel = "Nifty ETF" }: {
+export function GrowthChart({ points, height = 300, label = "Plan", benchLabel = "Nifty 50 ETF" }: {
   points: { time: string; value: number; benchmark: number }[]; height?: number; label?: string; benchLabel?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -149,7 +149,7 @@ export function GrowthChart({ points, height = 260, label = "Strategy", benchLab
     const el = ref.current;
     const opts = baseOptions(false);
     const chart = createChart(el, { ...opts, localization: { priceFormatter: (p: number) => compactInr(p).replace("−", "-") } });
-    const main = chart.addSeries(LineSeries, { color: cssVar("--gain"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const main = chart.addSeries(LineSeries, { color: cssVar("--ink"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     const bench = chart.addSeries(LineSeries, { color: cssVar("--ink-soft"), lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
     main.setData(dedupe(points.map((p) => ({ time: toTime(p.time, false), value: p.value }))));
     bench.setData(dedupe(points.map((p) => ({ time: toTime(p.time, false), value: p.benchmark }))));

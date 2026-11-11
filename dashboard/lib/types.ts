@@ -27,6 +27,7 @@ export type Portfolio = {
   last_run: string | null; run_at: string; rebalance: string; realized: number;
   filter: { index: number | null; sma: number | null; above: boolean } | null;
   pending?: boolean; missed?: string | null; liquid_symbol?: string; last_plan?: Plan | null;
+  target?: Record<string, number> | null; signals?: Record<string, { price: number; avg: number; above: boolean }> | null;
 };
 export type PlanOrder = { symbol: string; side: Side; qty: number; price: number; value: number };
 export type Plan = { at: string; late: boolean; strategy: string; target: Record<string, number>; orders: PlanOrder[] };

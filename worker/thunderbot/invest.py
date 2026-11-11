@@ -236,6 +236,7 @@ class InvestRunner:
 
     def _daily_run(self, st: dict[str, Any], strat: Any, now: datetime) -> str:
         today = now.date()
+        plan_name = daily.PLAN_NAMES.get(strat.name, strat.name)
         late = now.time() >= MARKET_CLOSE
         nxt = next_trading_day(self.clock, today)
         due = daily.REBALANCE[strat.rebalance](today, nxt) or not st.get("decided") or bool(st.get("pending"))
@@ -263,6 +264,11 @@ class InvestRunner:
         idx = hist.get(daily.INDEX, [])
         avg = daily.sma(idx, getattr(strat, "sma_days", getattr(strat, "trend_sma_days", 200)))
         self._filter = {"index": idx[-1] if idx else None, "sma": avg, "above": bool(avg and idx and idx[-1] > avg)}
+        # Where each ETF stands against its own 200-day average: shown on the dashboard as the reason for the holdings.
+        watched = getattr(strat, "assets", None) or list(getattr(strat, "weights", {})) or [getattr(strat, "asset", daily.BENCHMARK)]
+        st["signals"] = {s: {"price": round(hist[s][-1], 2), "avg": round(daily.sma(hist[s], 200), 2),
+                             "above": hist[s][-1] > daily.sma(hist[s], 200)}
+                         for s in watched if len(hist.get(s, [])) >= 200}
         st["last_run"] = today.isoformat()
         if not due:
             self.save(st)
@@ -281,7 +287,7 @@ class InvestRunner:
             st["pending"] = False
             self.save(st)
             self._equity(st, now)
-            self.store.event("rebalance", f"{strat.name}: holdings are on target, nothing to trade")
+            self.store.event("rebalance", f"{plan_name}: holdings are on target, nothing to trade")
             return "checked: holdings on target"
         traded = sorted(set(target) | set(st["lots"]))
         problems = self._price_problems(traded, live, last_close, today)
@@ -305,7 +311,7 @@ class InvestRunner:
         st["last_plan"] = {"at": now.isoformat(), "late": late, "target": {s: round(w, 4) for s, w in target.items()},
                            "orders": plan, "strategy": strat.name}
         names = ", ".join(f"{s} {w * 100:.0f}%" for s, w in sorted(target.items(), key=lambda kv: -kv[1])) or "cash"
-        self.store.event("rebalance", f"{strat.name}: holding {names}" + (" (late run on closing prices)" if late else ""),
+        self.store.event("rebalance", f"{plan_name}: now holding {names}" + (" (late run on closing prices)" if late else ""),
                          target=target, orders=plan)
         self.save(st)
         self._equity(st, now)
@@ -544,5 +550,6 @@ class InvestRunner:
                           "run_at": self.run_at.strftime("%H:%M"), "rebalance": strat.rebalance, "filter": self._filter,
                           "realized": st.get("realized", 0.0), "pending": bool(st.get("pending")),
                           "missed": st.get("missed"), "last_plan": st.get("last_plan"),
-                          "liquid_symbol": self.liquid_symbol},
+                          "liquid_symbol": self.liquid_symbol, "signals": st.get("signals"),
+                          "target": getattr(strat, "weights", None) or (st.get("last_plan") or {}).get("target")},
         })

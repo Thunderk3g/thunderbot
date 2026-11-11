@@ -9,7 +9,7 @@ import { usePoll } from "@/lib/usePoll";
 import { PnlBars, PnlCurve } from "./charts";
 import { Empty, Figures, Section, Segmented, Skeleton } from "./ui";
 
-type Perf = { mode: string; days: number; trades: Trade[]; outcomes: Outcome[]; anchor: string | null };
+type Perf = { mode: string; days: number; trades: Trade[]; outcomes: Outcome[]; value?: { day: string; gain: number }[]; anchor: string | null };
 type Mode = "paper" | "live" | "replay";
 const MODE_NOUN: Record<Mode, string> = { paper: "Paper trading", live: "Live trading", replay: "Replays" };
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
@@ -25,10 +25,18 @@ export default function PerformanceView({ defaultMode }: { defaultMode: Mode }) 
   const byStrategy = useMemo(() => groupBy(data?.trades ?? [], "strategy"), [data]);
   const bySymbol = useMemo(() => groupBy(data?.trades ?? [], "symbol"), [data]);
 
+  const value = data?.value ?? [];
+  const last = value.at(-1);
+  const hasTrades = !!data?.trades.length;
+  const invested = value.length > 0 && !(data?.outcomes.length);
+
   return (
     <div className="page">
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-        <h1>Results</h1>
+      <div className="page-head">
+        <div>
+          <h1>How it has gone.</h1>
+          <p className="lede">Money made or lost after every cost, by day. {mode === "paper" ? "Paper results use live prices and pretend money." : mode === "live" ? "Live results are real money on Groww." : "Replays run past sessions through the same code."}</p>
+        </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Segmented<Mode> label="Trading mode" value={mode} onChange={setMode} options={[
             { value: "paper", label: "Paper" }, { value: "live", label: "Live" }, { value: "replay", label: "Replay" },
@@ -40,43 +48,59 @@ export default function PerformanceView({ defaultMode }: { defaultMode: Mode }) 
       </div>
 
       {error && <div className="notice stop"><span className="grow">{error}</span></div>}
-      {!data ? <Skeleton height={300} /> : !data.trades.length ? (
-        <Empty title={`No ${mode} trades yet.`}>
-          {mode === "live" ? "Live results appear once the engine trades real money." : "Run the engine or a replay and results build up here."}
+      {!data ? <Skeleton height={300} /> : !hasTrades && !value.length ? (
+        <Empty title={`No ${mode} results yet.`}>
+          {mode === "live" ? "Live results appear once the bot trades real money." : "Start paper investing on Home and results build up here, one point a day."}
         </Empty>
       ) : (
         <>
-          <section>
-            <p className="hero-line" style={{ marginTop: 0, fontSize: 22, color: "var(--ink)", maxWidth: "48ch" }}>
-              {MODE_NOUN[mode]} {stats.net >= 0 ? "made" : "lost"} <strong className={tone(stats.net)}>{inr(Math.abs(stats.net))}</strong> over{" "}
-              {daily.length} trading {daily.length === 1 ? "day" : "days"}, after {inr(stats.costs)} in costs.
-            </p>
-            <div style={{ marginTop: 24 }}>
-              <Figures items={[
-                { label: "Trades", value: num(stats.trades, 0) },
-                { label: "Won", value: pct(stats.winRate, 0) },
-                { label: "Profit factor", value: num(stats.profitFactor) },
-                { label: "Average trade", value: signedInr(stats.expectancy), tone: tone(stats.expectancy) },
-                { label: "Worst drawdown", value: stats.maxDrawdown ? signedInr(-stats.maxDrawdown) : "none", tone: stats.maxDrawdown ? "loss" : "" },
-              ]} />
-            </div>
-          </section>
-
-          <Section title="Running total" aside={<p>Net P&amp;L by day{data.anchor ? `, through ${data.anchor.slice(0, 10)}` : ""}</p>}>
-            <PnlCurve points={daily.map((d) => ({ time: d.day, value: d.equity }))} height={260} label="total" />
-          </Section>
-
-          <div className="split even">
-            <Section title="Each day" aside={<div className="legend"><span><i style={{ background: "var(--gain)" }} />gain</span><span><i style={{ background: "var(--loss)" }} />loss</span></div>}>
-              <PnlBars points={daily.map((d) => ({ time: d.day, value: d.pnl }))} height={200} />
+          {value.length > 0 && (
+            <Section title="Since you started" aside={<p>Gain or loss on the whole portfolio, at each day&apos;s check</p>}>
+              <p className="hero-line" style={{ marginTop: 0, marginBottom: 18, fontSize: 21, color: "var(--ink)", maxWidth: "52ch" }}>
+                The portfolio is <strong className={tone(last!.gain)}>{inr(Math.abs(last!.gain))} {last!.gain >= 0 ? "up" : "down"}</strong> as of {new Date(`${last!.day}T12:00:00+05:30`).toLocaleDateString("en-IN", { day: "numeric", month: "long", timeZone: "Asia/Kolkata" })}
+                {value.length > 1 ? `, over ${value.length} daily checks.` : ". One check so far; the line grows a point a day."}
+              </p>
+              {value.length > 1 && <PnlCurve points={value.map((d) => ({ time: d.day, value: d.gain }))} height={260} label="gain" />}
             </Section>
-            <ReviewerSection stats={reviewer} />
-          </div>
+          )}
 
-          <div className="split even">
-            <Breakdown title="By strategy" rows={byStrategy} />
-            <Breakdown title="By stock" rows={bySymbol} ticker />
-          </div>
+          {hasTrades && (
+            <>
+              <section>
+                <p className="hero-line" style={{ marginTop: 0, fontSize: 21, color: "var(--ink)", maxWidth: "52ch" }}>
+                  {invested ? "Holdings sold so far" : MODE_NOUN[mode]} {stats.net >= 0 ? "made" : "lost"} <strong className={tone(stats.net)}>{inr(Math.abs(stats.net))}</strong> over{" "}
+                  {daily.length} trading {daily.length === 1 ? "day" : "days"}, after {inr(stats.costs)} in costs.
+                </p>
+                <div style={{ marginTop: 24 }}>
+                  <Figures items={[
+                    { label: invested ? "Sales" : "Trades", value: num(stats.trades, 0) },
+                    { label: "Won", value: pct(stats.winRate, 0) },
+                    { label: "Profit factor", value: num(stats.profitFactor) },
+                    { label: "Average trade", value: signedInr(stats.expectancy), tone: tone(stats.expectancy) },
+                    { label: "Worst drawdown", value: stats.maxDrawdown ? signedInr(-stats.maxDrawdown) : "none", tone: stats.maxDrawdown ? "loss" : "" },
+                  ]} />
+                </div>
+              </section>
+
+              {!invested && (
+                <Section title="Running total" aside={<p>Net P&amp;L by day{data.anchor ? `, through ${data.anchor.slice(0, 10)}` : ""}</p>}>
+                  <PnlCurve points={daily.map((d) => ({ time: d.day, value: d.equity }))} height={260} label="total" />
+                </Section>
+              )}
+
+              <div className="split even">
+                <Section title="Each day" aside={<div className="legend"><span><i style={{ background: "var(--gain)" }} />gain</span><span><i style={{ background: "var(--loss)" }} />loss</span></div>}>
+                  <PnlBars points={daily.map((d) => ({ time: d.day, value: d.pnl }))} height={200} />
+                </Section>
+                {!invested && <ReviewerSection stats={reviewer} />}
+              </div>
+
+              <div className="split even">
+                <Breakdown title="By strategy" rows={byStrategy} />
+                <Breakdown title={invested ? "By holding" : "By stock"} rows={bySymbol} ticker />
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

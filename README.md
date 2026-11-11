@@ -23,25 +23,25 @@ to keep alive.
 > retail intraday bot driven by an LLM or ML model. SEBI found 71% of intraday cash traders lost money in
 > FY23. Thunderbot is built to show such results plainly before real money is at risk.
 
-## The cockpit
+## The dashboard
 
-| Tab | What it does |
+| Page | What it is for |
 |---|---|
-| **Lab: Invest (daily)** | Test the daily strategies (steady mix, trend rotation, strongest ETFs, Nifty trend) over up to 17 years, after Groww charges and tax, against holding the Nifty ETF and against the same ETFs with no timing. |
-| **Lab: Intraday** | Backtests and walk-forward sweeps on free Yahoo Finance prices (about 60 days of 5-minute bars), practice data, saved CSVs, or Groww history. |
-| **Today** | For daily investing: portfolio value, holdings, the latest orders (to copy into the Groww app by hand), how it is set up, and **Check now**. For intraday: session P&L, open positions, the signal feed with reviewer verdicts. **Start** / hold-to-stop in the rail. |
-| **Results** | Paper / live / replay results: net P&L after costs, win rate, profit factor, expectancy, drawdown, cumulative and daily P&L charts, breakdowns by strategy and symbol, and **"Is the reviewer earning its keep?"**, which compares vetoed and approved signals by average R. |
-| **Lab** | Backtests and **walk-forward sweeps** run on the worker with the live engine's own code. Sweeps rank parameter sets on the first 70% of history and show how each did on the unseen last 30%. Promote a configuration to the engine in one click; configs that didn't hold up out-of-sample need a second, deliberate click. |
-| **Settings** | Strategy and parameters, capital and risk limits, universe and timing, reviewer. The worker validates and clamps everything. Live trading, MTF, the static IP and credentials are locked to the VPS environment, so the dashboard can never switch them on. |
-| **Log** | Every event and order state, filterable. |
+| **Home** | What the portfolio is worth and how it is split, when the bot checks next, what you hold, the latest orders as a list to copy into the Groww app, and whether the scheduler is calling in. A first visit shows three steps: wake the worker, choose a plan, start. **Start** and hold-to-stop are always in the top bar. |
+| **Plans** | Choose a plan, test it on up to 17 years of real prices after Groww's charges and tax, then use it. Every result is shown next to holding the Nifty 50 ETF and next to holding the same ETFs with no timing. A second tab holds the intraday research tools (backtests and walk-forward sweeps). |
+| **Results** | The portfolio's gain or loss at each daily check, and for anything sold: net result after costs, by day and by holding. For intraday runs: win rate, profit factor, drawdown, and whether the reviewer's vetoes did worse than its approvals. |
+| **Activity** | Every check, order and warning, newest first, filterable. |
+| **Settings** | A checklist of what is connected (scheduler, prices, alerts, reviewer, Groww, static IP), how the investing plan runs, and the limits for intraday research. Live trading and credentials can only be set where the worker runs, never from the dashboard. |
 
-![Today: the paper portfolio's value, its three ETF holdings, the latest orders and how the worker is set up](docs/screenshots/today.png)
+![Home: the portfolio's value on a storm-blue panel with the split between Nifty 50, Next 50 and gold, the next check, holdings, and orders to copy](docs/screenshots/today.png)
 
-![Lab: a 15-year test of the trend rotation, shown against the same ETFs with no timing and against holding the Nifty ETF](docs/screenshots/lab.png)
+![Plans: a 15-year test of trend rotation, shown against the same ETFs with no timing and against holding the Nifty 50 ETF](docs/screenshots/lab.png)
 
-Designed with Anthropic's open-source `frontend-design` skill (vendored in `.claude/skills/`); the plan and
-rationale are in [`docs/design.md`](docs/design.md). Archivo type, light and dark themes, animation by
-[Motion](https://motion.dev), charts by TradingView's [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
+Phone and dark-mode views are in [`docs/screenshots/`](docs/screenshots/). Designed with Anthropic's open-source
+`frontend-design` skill (vendored in `.claude/skills/`); the plan, palette and rationale are in
+[`docs/design.md`](docs/design.md). One typeface (Bricolage Grotesque), light and dark themes, a colour per holding
+checked for colour-blind separation, animation by [Motion](https://motion.dev), charts by TradingView's
+[Lightweight Charts](https://github.com/tradingview/lightweight-charts).
 
 ## Run it on one machine (no cloud, no broker account)
 

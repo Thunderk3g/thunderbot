@@ -851,6 +851,8 @@ DAILY_CATALOG = [
      ]},
 ]
 DAILY_NAMES = tuple(c["name"] for c in DAILY_CATALOG)
+PLAN_NAMES = {"core_mix": "Steady mix", "etf_trend": "Trend rotation", "etf_rank": "Strongest ETFs",
+              "index_trend": "Nifty trend", "momentum": "Momentum stocks"}  # what the dashboard calls each plan
 
 
 def daily_params(name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:

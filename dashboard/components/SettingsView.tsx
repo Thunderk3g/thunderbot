@@ -3,10 +3,11 @@
 import { AnimatePresence, motion } from "motion/react";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { inr } from "@/lib/format";
-import type { Control, EffectiveSettings } from "@/lib/types";
+import { dayTime, inr } from "@/lib/format";
+import { workerAlive, type Control, type EffectiveSettings } from "@/lib/types";
 import { post } from "@/lib/usePoll";
-import { Button, ChipsInput, Empty, Panel, Segmented, SliderField, Switch } from "./ui";
+import { planName } from "./InvestLab";
+import { Button, ChipsInput, Empty, Panel, Section, Segmented, SliderField, Switch } from "./ui";
 
 type Editable = EffectiveSettings["editable"];
 
@@ -16,7 +17,7 @@ const NAMES: Record<string, string> = {
   flatten_at: "flat-by time", entry_window: "trading hours", symbols: "stocks", live_trading_enabled: "live trading",
 };
 
-export default function SettingsView({ control, refresh }: { control?: Control; refresh: () => void }) {
+export default function SettingsView({ control, refresh, go }: { control?: Control; refresh: () => void; go?: (page: "lab" | "today") => void }) {
   const eff = control?.effective_settings;
   const catalog = control?.strategy_catalog ?? [];
   const [draft, setDraft] = useState<Editable | null>(null);
@@ -30,8 +31,9 @@ export default function SettingsView({ control, refresh }: { control?: Control; 
   }, [baseline, draft]);
 
   if (!eff || !draft || !baseline) {
-    return <Empty title="Settings haven't loaded.">The worker publishes them when it starts.</Empty>;
+    return <Empty title="Settings haven't loaded yet.">The worker publishes them the first time it runs. Wake it from Home.</Empty>;
   }
+  const hb = control?.heartbeat;
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
   const set = <K extends keyof Editable>(k: K, v: Editable[K]) => setDraft({ ...draft, [k]: v });
@@ -63,9 +65,41 @@ export default function SettingsView({ control, refresh }: { control?: Control; 
 
   return (
     <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Settings and setup.</h1>
+          <p className="lede">What is connected, how the investing plan runs, and the limits for intraday research.</p>
+        </div>
+      </div>
+
+      <div className="split even" style={{ alignItems: "start" }}>
+        <Section title="Is everything connected?">
+          <dl className="upnext">
+            <Check ok={workerAlive(hb)} title={hb?.scheduler === "serverless" ? "Scheduler" : "Worker"}
+              text={!hb ? "Nothing has reported in yet. Wake the worker from Home." : workerAlive(hb) ? `Calling in. Last heard ${dayTime(hb.wall_at ?? hb.at)}.` : `Silent since ${dayTime(hb.wall_at ?? hb.at)}. See docs/no-server.md, "If something is wrong".`} />
+            <Check ok={!hb?.feed || hb.feed.ok} title="Prices" text={hb?.feed ? hb.feed.message.replace(/^./, (c) => c.toUpperCase()) + "." : eff.env_only.feed === "groww" ? "Groww (official feed)." : "Yahoo Finance, free. Prices can lag the exchange."} />
+            <Check ok={!!eff.env_only.notifications} soft title="Phone alerts" text={eff.env_only.notifications ? "On: rebalances, missed runs and bad prices are sent to you." : "Set TB_NTFY_TOPIC or the Telegram variables to get them."} />
+            <Check ok={draft.llm_enabled} soft title="Reviewer" text={draft.llm_enabled ? `${eff.env_only.llm_model} checks each rebalance and can postpone it a day. It never changes an order.` : "The rules run by themselves, which is the tested setup."} />
+            <Check ok={eff.env_only.groww_configured} soft title="Groww account" text={eff.env_only.groww_configured ? "API key present." : "Not connected. Needed only for live orders."} />
+            <Check ok={eff.env_only.static_ip_configured} soft title="Static IP" text={eff.env_only.static_ip_configured ? "Configured for live orders." : "Not set. Brokers accept API orders only from an IP registered to you, so live orders stay off."} />
+          </dl>
+        </Section>
+        <Section title="Investing" aside={<Button size="sm" onClick={() => go?.("lab")}>Change plan</Button>}>
+          <dl className="facts">
+            <dt>Plan</dt><dd>{planName(control?.invest_settings?.strategy ?? hb?.strategy ?? "core_mix")}</dd>
+            <dt>Daily check</dt><dd>{hb?.portfolio?.run_at ?? "15:10"} IST on trading days</dd>
+            <dt>Money</dt><dd>{hb?.portfolio ? inr(hb.portfolio.capital) : inr(draft.capital)} {hb?.mode === "live" ? "real" : "paper"}</dd>
+            <dt>Idle money</dt><dd>Parked in {eff.env_only.liquid_symbol ?? "LIQUIDCASE"}</dd>
+            <dt>Tax slab used in tests</dt><dd>{eff.env_only.slab_rate_pct ?? 30}%</dd>
+            <dt>Live trading</dt><dd className={eff.env_only.live_trading_enabled ? "loss" : ""}>{eff.env_only.live_trading_enabled ? "Allowed on the worker" : "Off"}</dd>
+          </dl>
+          <p className="small soft" style={{ marginTop: 14, maxWidth: "58ch" }}>These are set where the worker runs (Vercel&apos;s environment variables, or <code>worker/.env</code>), so a stolen dashboard password cannot turn on live trading.</p>
+        </Section>
+      </div>
+
       <div>
-        <h1>Settings</h1>
-        <p className="soft" style={{ marginTop: 6, maxWidth: "64ch" }}>Changes apply on the worker within a few seconds. It checks every value against its own limits first.</p>
+        <h2 style={{ fontSize: 28, letterSpacing: "-0.02em" }}>Intraday research</h2>
+        <p className="lede" style={{ fontSize: 15 }}>Used only by the intraday worker and the intraday tests in Plans. Changes apply within a few seconds; the worker checks every value against its own limits first.</p>
       </div>
 
       <div className="notices">
@@ -162,7 +196,7 @@ export default function SettingsView({ control, refresh }: { control?: Control; 
           <Button size="sm" variant="quiet" onClick={reset}>Reset everything above to the server defaults</Button>
         </div>
         <p className="soft small" style={{ marginBottom: 14, maxWidth: "64ch" }}>
-          The dashboard can&apos;t change these, so a stolen password can&apos;t turn on live trading. Edit <code>/etc/thunderbot.env</code> on the server.
+          The dashboard can&apos;t change these. Edit the worker&apos;s environment (Vercel&apos;s settings, <code>worker/.env</code>, or <code>/etc/thunderbot.env</code> on a server).
         </p>
         <dl className="locked">
           <dt>Live trading</dt><dd className={eff.env_only.live_trading_enabled ? "loss" : ""}>{eff.env_only.live_trading_enabled ? "Allowed" : "Off"}</dd>
@@ -185,6 +219,16 @@ export default function SettingsView({ control, refresh }: { control?: Control; 
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** One line of the setup list. "soft" items are optional, so a missing one is neutral, not a fault. */
+function Check({ ok, soft, title, text }: { ok: boolean; soft?: boolean; title: string; text: string }) {
+  return (
+    <div>
+      <span className={`pip ${ok ? "ok" : soft ? "" : "bad"}`} />
+      <div><dt>{title}{ok ? "" : soft ? ": off" : ": needs attention"}</dt><dd>{text}</dd></div>
     </div>
   );
 }
