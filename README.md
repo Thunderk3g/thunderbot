@@ -6,8 +6,9 @@ to keep alive.
 - **Daily ETF strategies** do the real work: a fixed mix of Nifty 50, Next 50 and gold ETFs rebalanced
   once a year, or a trend rotation of the same ETFs that parks in a liquid ETF. One decision a day at
   15:10 IST, a handful of trades a year.
-- **A function, not a server.** Supabase's scheduler wakes a Python function on Vercel every five minutes
-  in market hours; it does one pass and exits. Setup: [`docs/no-server.md`](docs/no-server.md).
+- **A function, not a server.** Supabase's scheduler (every five minutes) and Vercel's own (every fifteen)
+  wake a Python function on Vercel in market hours; it does one pass and exits. Setup:
+  [`docs/no-server.md`](docs/no-server.md).
 - **An honest Lab.** Every backtest is after Groww charges and capital-gains tax by asset class, and is
   shown next to holding the Nifty ETF and next to holding the same ETFs with no timing.
 - **An LLM that checks, not predicts.** An optional Claude reviewer can postpone a rebalance when prices

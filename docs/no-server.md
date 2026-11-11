@@ -8,8 +8,12 @@ Supabase (free plan)                               Vercel (Hobby plan, Mumbai)
   Postgres: journal, control, jobs, daily_runs  <--  dashboard (Next.js)
   Cron: every 5 min, 09:15-15:35 IST  ---------->  /api/worker (Python function)
         17:00 IST catch-up, weekends, watchdog       one pass of `thunderbot`, then it exits
-  Vault: worker URL + shared secret                Vercel Cron once a day, as a backup
+  Vault: worker URL + shared secret                Vercel Schedules: every 15 min in market hours
 ```
+
+Two clocks wake the same function, and a lock in the database lets only one of them act on a given day.
+Vercel's own scheduler works as soon as the project is deployed. Supabase's is more punctual (to the
+minute, against a 15-minute window on Vercel's free plan) and adds the watchdog; connect it in step 3.
 
 **What this setup does:** paper trading of the daily strategies on live Yahoo prices, backtests from the
 Lab, alerts, and a list of the exact orders after each rebalance. **What it does not do:** place real
@@ -48,7 +52,10 @@ The reasoning and sources behind each choice are in
    `TB_SLAB_RATE_PCT` (`30`), `TB_NTFY_TOPIC` or `TB_TELEGRAM_TOKEN` + `TB_TELEGRAM_CHAT_ID` for alerts,
    and `TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY` for the rebalance reviewer.
 3. Deploy. `dashboard/vercel.json` already pins the function to Mumbai (`bom1`), gives it 300 seconds, and
-   registers the daily backup cron.
+   registers two schedules: a 15-minute tick from 09:00 to 15:45 IST on weekdays (Vercel Schedules, a
+   public beta since 4 November 2026) and the older once-a-day cron as a stand-in. If a deployment ever
+   fails with an error about `schedules`, delete that block from `vercel.json`; Supabase's scheduler in
+   step 3 then does the job by itself.
 4. Open the site, log in, and press **Wake the worker** on Today. A heartbeat appears within a few seconds.
 
 ### 3. Connect the scheduler
@@ -80,9 +87,9 @@ In the dashboard, test strategies in the **Lab**, press **Use this strategy** on
 
 ## How it behaves
 
-- **Every five minutes in market hours** Supabase calls the function. Most calls only write a heartbeat.
-  At the first call from 15:10 IST the function makes the day's decision. On most days that is "not a
-  rebalance day".
+- **Every five minutes in market hours** Supabase calls the function, and Vercel calls it about every
+  fifteen. Most calls only write a heartbeat. At the first call from 15:10 IST the function makes the
+  day's decision. On most days that is "not a rebalance day".
 - **Only one run acts per day.** The function claims the day in the `daily_runs` table before it decides.
   A second scheduler calling at the same moment finds the day taken and stops.
 - **A late paper run still runs.** If nothing called the function before the close, the 15:35 or 17:00 IST
@@ -100,7 +107,8 @@ Figures as documented by Vercel and Supabase in November 2026; check them if som
 
 | Limit | Hobby / free plan | Consequence |
 |---|---|---|
-| Vercel Cron frequency | once a day, firing anywhere within the hour | cannot be the 15:10 clock; Supabase Cron is |
+| Vercel Schedules (beta) | every 15 minutes at most, each run landing somewhere in a 15-minute window; 5,000 runs a month | good enough to act between 15:10 and 15:30; Supabase Cron is the punctual clock |
+| Vercel Cron (legacy) | once a day, firing anywhere within the hour | a stand-in only |
 | Vercel function time | 300 seconds | a tick takes 1-3 seconds; a backtest a few seconds |
 | Vercel Python bundle | 500 MB | the worker and its dependencies are a small fraction of that |
 | Vercel runtime logs | kept 1 hour | the worker journals to Supabase instead |

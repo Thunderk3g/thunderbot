@@ -137,7 +137,7 @@ class Settings:
     invest_cutoff: str = "15:25"  # a live run that starts after this does not trade; it tries again next session
     liquid_symbol: str = "LIQUIDCASE"  # the growth-type liquid ETF that idle money is parked in
     slab_rate_pct: float = 30.0  # your marginal income-tax rate, for liquid and short-term gold ETF gains
-    tick_minutes: float = 5.0  # how often a scheduler calls the serverless worker during market hours
+    tick_minutes: float = 15.0  # the longest gap between scheduler calls in market hours (Vercel's free tier)
     cron_secret: str | None = None  # shared secret the schedulers send to the serverless worker
     telegram_token: str | None = None
     telegram_chat_id: str | None = None

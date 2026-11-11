@@ -47,7 +47,7 @@ pass and exits (`thunderbot/serverless.py`, served by `dashboard/api/worker.py` 
 ```
 Supabase pg_cron --(pg_net GET, Bearer secret from Vault)--> /api/worker --> thunderbot.serverless.handle
                                                                               |-- InvestRunner.tick()   state in `control`
-Vercel Cron (daily backup) ------------------------------->                   |-- JobRunner.run_once()  queued Lab jobs
+Vercel Schedules (15 min) + legacy daily cron ------------>                   |-- JobRunner.run_once()  queued Lab jobs
 Dashboard "Check now" / Lab "Test" (Basic Auth) ---------->                   `-- RemoteStore            Supabase only, retried
 ```
 
