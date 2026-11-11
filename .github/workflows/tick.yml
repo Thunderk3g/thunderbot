@@ -1,0 +1,47 @@
+# Optional fallback scheduler: GitHub runs `thunderbot tick` on weekday afternoons.
+#
+# It is OFF until you set the repository variable TB_ACTIONS_TICK to "on" and add the secrets
+# SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (Settings > Secrets and variables > Actions).
+# GitHub starts scheduled workflows late when it is busy (often 5-30 minutes, sometimes more) and can
+# drop a run, so treat this as a backup to Supabase Cron, not as the 15:10 clock. The run lock in
+# Supabase keeps it from repeating a decision another scheduler already made. Paper trading only:
+# GitHub's runners have no fixed IP, so a broker would refuse live orders from here.
+# Scheduled workflows run only from the default branch.
+name: Tick
+
+on:
+  schedule:
+    - cron: "37 9 * * 1-5"   # 15:07 IST
+    - cron: "52 9 * * 1-5"   # 15:22 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thunderbot-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: ${{ vars.TB_ACTIONS_TICK == 'on' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TB_CAPITAL: ${{ vars.TB_CAPITAL || '100000' }}
+      TB_INVEST_STRATEGY: ${{ vars.TB_INVEST_STRATEGY || 'core_mix' }}
+      TB_NTFY_TOPIC: ${{ secrets.TB_NTFY_TOPIC }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Refuse to run without Supabase (state would be lost when the runner exits)
+        run: test -n "$SUPABASE_URL" && test -n "$SUPABASE_SERVICE_ROLE_KEY"
+      - run: thunderbot tick

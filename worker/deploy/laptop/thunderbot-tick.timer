@@ -1,0 +1,13 @@
+# ~/.config/systemd/user/thunderbot-tick.timer
+[Unit]
+Description=Thunderbot daily investing check at 15:10 and 15:20 IST on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:10:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 15:20:00 Asia/Kolkata
+# Run a missed check as soon as the machine is back (after sleep or a reboot).
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
