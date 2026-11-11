@@ -3,7 +3,8 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useMemo, useState } from "react";
 import { dayTime, hhmm, inr, num, signedInr } from "@/lib/format";
-import type { EventRow, LiveState, Position, SignalCard } from "@/lib/types";
+import { workerAlive, type EventRow, type LiveState, type Plan, type Position, type SignalCard } from "@/lib/types";
+import { wakeWorker } from "@/lib/usePoll";
 import DayStrip from "./DayStrip";
 import { AnimatedNumber, Button, Empty, Section, Skeleton, spring } from "./ui";
 
@@ -11,7 +12,7 @@ const ALERT_KINDS = new Set(["error", "exit_failed", "stop_failed", "halt", "kil
 const tone = (n: number) => (n > 0 ? "gain" : n < 0 ? "loss" : "");
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export default function LiveView({ state, act }: { state: LiveState | null; act: (a: string) => Promise<void> }) {
+export default function LiveView({ state, act, refresh }: { state: LiveState | null; act: (a: string) => Promise<void>; refresh?: () => void }) {
   if (!state) return <Loading />;
   const { control, tradesToday, equityToday, signals, events, sessionDay } = state;
   const hb = control.heartbeat;
@@ -21,7 +22,7 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
   const total = realized + unrealized;
   const positions = hb?.positions ?? [];
   const closed = tradesToday.length;
-  const alive = !!hb?.wall_at && Date.now() - new Date(hb.wall_at).getTime() < 45_000;
+  const alive = workerAlive(hb);
   const todayIst = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   const needLogin = hb?.mode === "live" && eff?.env_only.require_login_confirmation && control.login_confirmed_for !== todayIst;
   const trading = !control.kill_switch && !!control.trading_enabled;
@@ -29,7 +30,7 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
   const notStarted = hb && alive && hb.mode !== "replay" && !trading;
 
   if (hb?.style === "invest" && hb.portfolio) {
-    return <InvestToday state={state} act={act} alive={alive} feedDown={feedDown} notStarted={!!notStarted} trading={trading} />;
+    return <InvestToday state={state} act={act} alive={alive} feedDown={feedDown} notStarted={!!notStarted} trading={trading} refresh={refresh} />;
   }
 
   const summary = !closed && !positions.length
@@ -43,6 +44,11 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
     <div className="page">
       <div className="notices">
         <AnimatePresence initial={false}>
+          {!hb && (
+            <Notice key="wake" kind="info" action={<WakeButton refresh={refresh} label="Wake the worker" />}>
+              No worker has reported in yet. Wake it once to set things up; after that the scheduler calls it by itself.
+            </Notice>
+          )}
           {feedDown && (
             <Notice key="feed" kind="stop">
               {hb?.feed?.source === "yahoo" ? "Yahoo prices aren't coming through" : "Groww isn't connected"}, so nothing can trade. {feedDown}
@@ -123,16 +129,74 @@ export default function LiveView({ state, act }: { state: LiveState | null; act:
   );
 }
 
-const STRATEGY_NAME: Record<string, string> = { index_trend: "Nifty trend (ETF or cash)", momentum: "Momentum top stocks" };
+const STRATEGY_NAME: Record<string, string> = {
+  core_mix: "Steady mix (Nifty 50, Next 50, gold)", etf_trend: "Trend rotation (ETFs or liquid fund)", etf_rank: "Strongest ETFs (dual momentum)",
+  index_trend: "Nifty trend (ETF or liquid fund)", momentum: "Momentum top stocks",
+};
+const TRADES_WHEN: Record<string, string> = {
+  core_mix: "trades once a year, at the end of March (and when first started)",
+  etf_trend: "trades at month-end, only when an ETF crosses its average or a weight drifts 10 points",
+  etf_rank: "trades at month-end, only when the strongest ETFs change or a weight drifts 10 points",
+  index_trend: "trades at month-end, only when the Nifty crosses its average",
+  momentum: "re-ranks the stocks each quarter; checks the market filter at month-end",
+};
 
-function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
-  state: LiveState; act: (a: string) => Promise<void>; alive: boolean; feedDown: string | null; notStarted: boolean; trading: boolean;
+/** One pass of the serverless worker on demand: first-time setup, or catching up after a missed run. */
+function WakeButton({ refresh, label }: { refresh?: () => void; label: string }) {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const go = async () => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const r = await wakeWorker();
+      setNote(r.did ? `Done: ${r.did}.` : "Done.");
+      refresh?.();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+      {note && <span className="small soft" role="status">{note}</span>}
+      <Button size="sm" variant="quiet" onClick={go} disabled={busy}>{busy ? "Checking…" : label}</Button>
+    </span>
+  );
+}
+
+function PlanTable({ plan, mode }: { plan: Plan; mode: string }) {
+  const when = dayTime(plan.at);
+  if (!plan.orders.length) return <p className="small soft">The last check on {when} needed no trades.</p>;
+  return (
+    <>
+      <div className="table-wrap"><table>
+        <thead><tr><th>Order</th><th>ETF</th><th className="num">Qty</th><th className="num">Price</th><th className="num">Value</th></tr></thead>
+        <tbody>{plan.orders.map((o) => (
+          <tr key={`${o.side}-${o.symbol}`}><td className={o.side === "BUY" ? "gain" : "loss"}>{o.side === "BUY" ? "Buy" : "Sell"}</td>
+            <td className="ticker">{o.symbol}</td><td className="num">{o.qty}</td><td className="num">{num(o.price)}</td><td className="num">{inr(o.value)}</td></tr>
+        ))}</tbody>
+      </table></div>
+      <p className="small soft" style={{ marginTop: 10, maxWidth: "70ch" }}>
+        {mode === "live" ? `Placed on Groww on ${when}.` : `Simulated on ${when}${plan.late ? ", after the close, on closing prices" : ""}.`}{" "}
+        {mode !== "live" && "To follow this with real money without the Trade API, place the same orders in the Groww app as limit orders near these prices, selling first."}
+      </p>
+    </>
+  );
+}
+
+function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh }: {
+  state: LiveState; act: (a: string) => Promise<void>; alive: boolean; feedDown: string | null; notStarted: boolean; trading: boolean; refresh?: () => void;
 }) {
   const { control, events } = state;
   const hb = control.heartbeat!;
   const p = hb.portfolio!;
   const gain = p.value - p.capital;
   const f = p.filter;
+  const usesFilter = hb.strategy === "index_trend" || hb.strategy === "momentum";
+  const serverless = hb.scheduler === "serverless";
+  const strategyName = control.daily_catalog?.find((c) => c.name === hb.strategy)?.label ?? STRATEGY_NAME[hb.strategy ?? ""] ?? hb.strategy;
   const nextDay = new Date(`${p.next_rebalance}T12:00:00+05:30`).toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
   return (
     <div className="page">
@@ -147,7 +211,14 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
           {control.paused && trading && (
             <Notice key="pause" kind="caution" action={<Button size="sm" onClick={() => act("resume")}>Resume</Button>}>Paused: the holdings stay, and no trades happen.</Notice>
           )}
-          {!alive && <Notice key="off" kind="caution">The worker hasn&apos;t reported since {dayTime(hb.wall_at ?? hb.at)}.</Notice>}
+          {p.pending && trading && (
+            <Notice key="pending" kind="caution">A rebalance is waiting{p.missed ? ` (the ${p.missed} run started too late to trade)` : ""}. It will be decided again on fresh prices at {p.run_at} on the next trading day. The Log says why.</Notice>
+          )}
+          {!alive && (
+            <Notice key="off" kind="caution" action={serverless ? <WakeButton refresh={refresh} label="Check now" /> : undefined}>
+              {serverless ? `The scheduler hasn't called the worker since ${dayTime(hb.wall_at ?? hb.at)}.` : `The worker hasn't reported since ${dayTime(hb.wall_at ?? hb.at)}.`}
+            </Notice>
+          )}
         </AnimatePresence>
       </div>
 
@@ -155,11 +226,11 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
         <div className={`hero-figure ${tone(gain)}`}><AnimatedNumber value={p.value} format={(n) => inr(n)} /></div>
         <p className="hero-line">
           <strong className={tone(gain)}>{signedInr(gain)}</strong> ({((gain / p.capital) * 100).toFixed(1)}%) since the start with {inr(p.capital)}.{" "}
-          {p.invested_pct.toFixed(0)}% invested, {inr(p.cash)} in cash. Next check: {nextDay} at {p.run_at}.
+          {p.invested_pct.toFixed(0)}% invested, {inr(p.cash)} in cash. Next {p.pending ? "attempt" : "rebalance check"}: {nextDay} at {p.run_at}.
         </p>
-        {f?.index && f.sma && (
+        {usesFilter && f?.index && f.sma && (
           <p className="small soft" style={{ marginTop: 10 }}>
-            Nifty {num(f.index, 0)} is {f.above ? "above" : "below"} its 200-day average ({num(f.sma, 0)}), so the strategy {f.above ? "can hold shares" : "stays in cash"}.
+            Nifty {num(f.index, 0)} is {f.above ? "above" : "below"} its 200-day average ({num(f.sma, 0)}), so the strategy {f.above ? "can hold shares" : "stays out of shares"}.
           </p>
         )}
       </section>
@@ -167,9 +238,9 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
       <div className="split">
         <div className="page" style={{ gap: 40 }}>
           <Section title="Holdings" aside={<p>{p.holdings.length} {p.holdings.length === 1 ? "position" : "positions"}</p>}>
-            {!p.holdings.length ? <Empty title="All cash.">Holdings appear here after the next check, if the market filter allows it.</Empty> : (
+            {!p.holdings.length ? <Empty title="All cash.">Holdings appear here after the first check at {p.run_at} IST on a trading day.</Empty> : (
               <div className="table-wrap"><table>
-                <thead><tr><th>Stock</th><th className="num">Qty</th><th className="num">Avg</th><th className="num">Price</th><th className="num">Weight</th><th className="num">P&amp;L</th></tr></thead>
+                <thead><tr><th>Holding</th><th className="num">Qty</th><th className="num">Avg</th><th className="num">Price</th><th className="num">Weight</th><th className="num">P&amp;L</th></tr></thead>
                 <tbody>{p.holdings.map((h) => (
                   <tr key={h.symbol}><td className="ticker">{h.symbol}</td><td className="num">{h.qty}</td><td className="num">{num(h.avg_price)}</td>
                     <td className="num">{num(h.ltp)}</td><td className="num">{h.weight.toFixed(1)}%</td><td className={`num ${tone(h.pnl)}`}>{signedInr(h.pnl)}</td></tr>
@@ -177,16 +248,20 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading }: {
               </table></div>
             )}
           </Section>
+          {p.last_plan && <Section title="Latest orders"><PlanTable plan={p.last_plan} mode={hb.mode} /></Section>}
           <Section title="How it's set up" aside={control.paused
             ? <Button size="sm" variant="quiet" onClick={() => act("resume")}>Resume</Button>
             : <Button size="sm" variant="quiet" onClick={() => act("pause")}>Pause</Button>}>
             <dl className="facts">
-              <dt>Strategy</dt><dd>{STRATEGY_NAME[hb.strategy ?? ""] ?? hb.strategy}</dd>
-              <dt>Checks</dt><dd>Every trading day at {p.run_at}; trades only on {p.rebalance === "monthly" ? "the last trading day of the month" : p.rebalance} (or when empty)</dd>
+              <dt>Strategy</dt><dd>{strategyName}</dd>
+              <dt>Checks</dt><dd>Every trading day at {p.run_at} IST; {TRADES_WHEN[hb.strategy ?? ""] ?? `trades ${p.rebalance}`}</dd>
+              <dt>Runs on</dt><dd>{serverless ? "A scheduled function: it wakes every few minutes in market hours, nothing stays running" : "A long-running worker"}</dd>
               <dt>Prices</dt><dd>{hb.feed?.source === "yahoo" ? "Yahoo Finance (free)" : "Groww"}{hb.feed && !hb.feed.ok ? ", not connected" : ""}</dd>
-              <dt>Orders</dt><dd className={hb.mode === "live" ? "loss" : ""}>{hb.mode === "live" ? "Real delivery (CNC) orders on Groww" : "Simulated (paper), with Groww charges"}</dd>
+              <dt>Orders</dt><dd className={hb.mode === "live" ? "loss" : ""}>{hb.mode === "live" ? "Real delivery (CNC) limit orders on Groww" : "Simulated (paper), with Groww charges"}</dd>
+              {p.liquid_symbol && <dt>Idle money</dt>}{p.liquid_symbol && <dd>Parked in {p.liquid_symbol} when the strategy steps out of an ETF</dd>}
               <dt>Realized P&amp;L</dt><dd className={tone(p.realized)}>{signedInr(p.realized)}</dd>
             </dl>
+            {serverless && <div style={{ marginTop: 14 }}><WakeButton refresh={refresh} label="Check now" /></div>}
           </Section>
         </div>
         <div className="page" style={{ gap: 40 }}>

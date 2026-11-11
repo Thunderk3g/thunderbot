@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["bom1"],
+  "functions": {
+    "api/worker.py": { "maxDuration": 300 }
+  },
+  "crons": [
+    { "path": "/api/worker", "schedule": "40 9 * * 1-5" }
+  ]
+}

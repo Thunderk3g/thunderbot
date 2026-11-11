@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-// The dashboard can engage the kill switch and confirm the daily broker login,
-// so it must never be public. HTTP Basic Auth fails closed when unconfigured.
+// The dashboard can start and stop trading, so it must never be public.
+// HTTP Basic Auth on every path, failing closed when unconfigured.
 export function middleware(req: NextRequest) {
   const user = process.env.DASHBOARD_USER;
   const pass = process.env.DASHBOARD_PASSWORD;
@@ -11,6 +11,12 @@ export function middleware(req: NextRequest) {
     });
   }
   const header = req.headers.get("authorization") ?? "";
+  // Schedulers (Vercel Cron, Supabase pg_cron) cannot answer a Basic Auth prompt. They reach the
+  // worker function, and only it, with the shared cron secret; the function checks it again.
+  const cron = process.env.CRON_SECRET;
+  if (cron && req.nextUrl.pathname === "/api/worker" && header.startsWith("Bearer ") && timingSafeEqual(header.slice(7), cron)) {
+    return NextResponse.next();
+  }
   if (header.startsWith("Basic ")) {
     try {
       const [u, ...rest] = atob(header.slice(6)).split(":");

@@ -5,7 +5,7 @@ import { LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { dayTime, inr, num, pct, signedInr } from "@/lib/format";
 import type { BacktestResult, Control, InvestResult, Job, ParamSpec, StrategyInfo, SweepResult, SweepRow } from "@/lib/types";
-import { post, usePoll } from "@/lib/usePoll";
+import { post, usePoll, startJob } from "@/lib/usePoll";
 import { PnlCurve } from "./charts";
 import InvestLab, { InvestResultView, ModeSwitch, NoResult } from "./InvestLab";
 import { Button, ChipsInput, Empty, Figures, Panel, Progress, Section, Segmented, SliderField, spring } from "./ui";
@@ -13,7 +13,7 @@ import { Button, ChipsInput, Empty, Figures, Panel, Progress, Section, Segmented
 type Kind = "backtest" | "sweep";
 type Source = "yahoo" | "demo" | "csv" | "groww";
 const SOURCE_NAME: Record<string, string> = { yahoo: "Yahoo Finance", demo: "practice data", csv: "saved candles", groww: "Groww history" };
-const DAILY_NAME: Record<string, string> = { index_trend: "Nifty trend", momentum: "Momentum" };
+const DAILY_NAME: Record<string, string> = { core_mix: "Steady mix", etf_trend: "Trend rotation", etf_rank: "Strongest ETFs", index_trend: "Nifty trend", momentum: "Momentum stocks" };
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss") as "" | "gain" | "loss";
 
 function isoDaysAgo(days: number): string {
@@ -60,7 +60,7 @@ function LabHeader({ mode, setMode }: { mode: "invest" | "intraday"; setMode: (m
         <h1>Lab</h1>
         <p className="soft" style={{ marginTop: 6, maxWidth: "64ch" }}>
           {mode === "invest"
-            ? "Test a slow, daily strategy over up to 18 years of real NSE prices, after Groww charges and capital-gains tax. Daily strategies have far stronger evidence than intraday ones."
+            ? "Test a slow, daily strategy over up to 17 years of real NSE prices, after Groww charges and capital-gains tax. Each result is shown next to simply holding the Nifty ETF, and next to holding the same ETFs with no timing at all."
             : "Test an intraday strategy on past prices with the same code that trades. A sweep tries several settings, picks the best on the first 70% of the history, then checks it on the last 30%, which it never saw."}
         </p>
       </div>
@@ -106,10 +106,7 @@ function IntradayLab({ control, onApplied, mode, setMode }: { control?: Control;
     setSubmitting(true);
     try {
       const gridValues = Object.fromEntries(Object.entries(grid).map(([k, v]) => [k, v.split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x))]));
-      const { id } = await post<{ id: string }>("/api/jobs", {
-        kind, params: { strategy, strategy_params: params, symbols, data: source, start, end, ...(kind === "sweep" ? { grid: gridValues } : {}) },
-      });
-      setJobId(id);
+      setJobId(await startJob(kind, { strategy, strategy_params: params, symbols, data: source, start, end, ...(kind === "sweep" ? { grid: gridValues } : {}) }));
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -234,7 +231,7 @@ function JobView({ id, onApply, onUseInvest }: { id: string; onApply: (sp: Recor
       <div>
         <h2>{!job || job.status === "queued" ? "Waiting for the worker" : job.kind === "sweep" ? "Running the sweep" : job.kind === "invest" ? "Testing over the years" : "Running the backtest"}</h2>
         <div style={{ margin: "14px 0 10px" }}><Progress value={Number(job?.progress) || 0.03} /></div>
-        <p className="small soft">{job?.status === "queued" ? "Experiments run on the worker. If this doesn't start, check thunderbot serve or thunderbot jobs is running." : "Same code as live trading, replayed over past candles."}</p>
+        <p className="small soft">{job?.status === "queued" ? "Experiments run on the worker. If this doesn't start within a minute, the worker function isn't deployed (or, on your own machine, thunderbot serve isn't running)." : "Same code as live trading, replayed over past prices."}</p>
       </div>
     );
   }

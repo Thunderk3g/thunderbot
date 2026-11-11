@@ -49,3 +49,21 @@ export async function post<T = unknown>(url: string, body: unknown): Promise<T> 
   if (!res.ok) throw new Error(json.error ?? res.statusText);
   return json as T;
 }
+
+
+/** Queue a research job, then wake the serverless worker to run it now. Where no such function exists
+ *  (local `thunderbot serve`, a long-running worker) the wake-up fails quietly and the worker's own
+ *  job loop picks the job up. */
+export async function startJob(kind: "backtest" | "sweep" | "invest", params: Record<string, unknown>): Promise<string> {
+  const { id } = await post<{ id: string }>("/api/jobs", { kind, params });
+  void fetch(`/api/worker?op=job&id=${encodeURIComponent(id)}`, { method: "POST" }).catch(() => undefined);
+  return id;
+}
+
+/** One pass of the serverless worker, on demand. Throws if the function is not deployed or fails. */
+export async function wakeWorker(): Promise<{ did?: string }> {
+  const res = await fetch("/api/worker?op=tick", { method: "POST" });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error ?? (res.status === 404 ? "there is no worker function on this deployment" : res.statusText));
+  return json;
+}
