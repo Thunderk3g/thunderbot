@@ -22,3 +22,8 @@ node_modules/
 .next/
 dashboard/.env*.local
 *.tsbuildinfo
+
+# Vercel build output and files its Python builder writes
+.vercel/
+dashboard/uv.lock
+dashboard/.python-version

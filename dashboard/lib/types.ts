@@ -11,14 +11,25 @@ export type Heartbeat = {
   halt_reason?: string; market_open?: boolean; capital?: number; llm_enabled?: boolean; reviewer?: string;
   trading?: "running" | "stopped"; feed?: { source: string; ok: boolean; message: string } | null;
   style?: "intraday" | "invest"; portfolio?: Portfolio;
+  scheduler?: "worker" | "serverless"; next_tick_by?: string;
 };
+
+/** Is the worker (or its scheduler) still reporting? A serverless worker says when to expect it next. */
+export function workerAlive(hb?: Heartbeat): boolean {
+  if (!hb?.wall_at) return false;
+  if (hb.next_tick_by) return Date.now() < new Date(hb.next_tick_by).getTime() + 180_000;
+  return Date.now() - new Date(hb.wall_at).getTime() < 45_000;
+}
 
 export type Holding = { symbol: string; qty: number; avg_price: number; ltp: number; value: number; weight: number; pnl: number; since: string };
 export type Portfolio = {
   value: number; cash: number; capital: number; invested_pct: number; holdings: Holding[]; next_rebalance: string;
   last_run: string | null; run_at: string; rebalance: string; realized: number;
   filter: { index: number | null; sma: number | null; above: boolean } | null;
+  pending?: boolean; missed?: string | null; liquid_symbol?: string; last_plan?: Plan | null;
 };
+export type PlanOrder = { symbol: string; side: Side; qty: number; price: number; value: number };
+export type Plan = { at: string; late: boolean; strategy: string; target: Record<string, number>; orders: PlanOrder[] };
 export type DailyStrategy = { name: string; label: string; description: string; params: ParamSpec[] };
 
 export type ParamSpec = { name: string; label: string; type: "int" | "float"; min: number; max: number; step: number; default: number };
@@ -36,6 +47,7 @@ export type EffectiveSettings = {
   env_only: {
     live_trading_enabled: boolean; allow_mtf_api: boolean; require_login_confirmation: boolean;
     static_ip_configured: boolean; groww_configured: boolean; llm_model: string; orders_per_second: number; feed?: string;
+    liquid_symbol?: string; slab_rate_pct?: number; notifications?: boolean;
   };
   hard_ceilings: Record<string, number | string>;
   llm_efforts: string[];
@@ -100,10 +112,13 @@ export type InvestMetrics = {
 };
 export type InvestResult = {
   metrics: InvestMetrics & { trades: number; costs: number; taxes: number; turnover_per_year: number; time_invested_pct: number;
-    rebalances: number; benchmark: InvestMetrics };
+      rebalances: number; exit_tax?: number; cagr_after_exit_tax_pct?: number | null;
+    benchmark: InvestMetrics & { exit_tax?: number; cagr_after_exit_tax_pct?: number | null } };
   yearly: { year: number; strategy_pct: number; benchmark_pct: number | null }[];
   equity: { date: string; value: number; benchmark: number }[];
   strategy: string; strategy_params: Record<string, number>; data_note: string; years: number; capital: number;
+  slab_rate_pct?: number; allocation?: Record<string, number>;
+  comparators?: { label: string; cagr_pct: number; cagr_after_exit_tax_pct: number | null; max_drawdown_pct: number; final_value: number; trades: number }[];
 };
 export type Job = {
   id: string; created_at: string; kind: "backtest" | "sweep" | "invest"; params: Record<string, unknown>;

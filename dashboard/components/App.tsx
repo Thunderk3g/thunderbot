@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Moon, OctagonX, Play, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ago } from "@/lib/format";
-import type { Control, EventRow, Heartbeat, LiveState } from "@/lib/types";
+import { workerAlive, type Control, type EventRow, type Heartbeat, type LiveState } from "@/lib/types";
 import { post, usePoll } from "@/lib/usePoll";
 import { Button, HoldButton, StatusDot, spring } from "./ui";
 import LiveView from "./LiveView";
@@ -32,9 +32,13 @@ export function tradingOn(control?: Control): boolean {
 
 function workerState(control?: Control): { on: boolean; title: string; detail: string } {
   const hb: Heartbeat | undefined = control?.heartbeat;
-  if (!hb) return { on: false, title: "No worker yet", detail: "Start the worker on the server to trade from here." };
-  const alive = !!hb.wall_at && Date.now() - new Date(hb.wall_at).getTime() < 45_000;
-  if (!alive) return { on: false, title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
+  if (!hb) return { on: false, title: "No worker yet", detail: "Nothing has reported in. Wake the worker from Today." };
+  const serverless = hb.scheduler === "serverless";
+  if (!workerAlive(hb)) {
+    return serverless
+      ? { on: false, title: "Scheduler is silent", detail: `Last check ${ago(hb.wall_at ?? hb.at)}. The cron job isn't calling the worker.` }
+      : { on: false, title: "Worker offline", detail: `Last heard from ${ago(hb.wall_at ?? hb.at)}.` };
+  }
   if (hb.mode === "replay") return { on: true, title: "Running a replay", detail: `Updated ${ago(hb.wall_at)}.` };
   if (control?.kill_switch) return { on: false, title: "Stopped", detail: "Everything is flat. Press Start to trade again." };
   if (!control?.trading_enabled) return { on: false, title: "Not trading", detail: `Press Start to begin ${MODE_WORD[hb.mode] ?? hb.mode}.` };
@@ -42,7 +46,7 @@ function workerState(control?: Control): { on: boolean; title: string; detail: s
   if (hb.halted) return { on: false, title: "Halted for the day", detail: hb.halt_reason ?? "Daily loss limit reached." };
   if (control?.paused) return { on: true, title: "Paused", detail: "Managing open trades, taking no new ones." };
   if (hb.market_open === false && hb.style !== "invest") return { on: true, title: "Waiting for the market", detail: "Trades 09:15–15:30 IST, Monday to Friday." };
-  if (hb.style === "invest") return { on: true, title: `Investing (${hb.mode})`, detail: `Acts daily at ${hb.portfolio?.run_at ?? "15:10"}. Updated ${ago(hb.wall_at)}.` };
+  if (hb.style === "invest") return { on: true, title: `Investing (${hb.mode})`, detail: `Acts daily at ${hb.portfolio?.run_at ?? "15:10"}. Last check ${ago(hb.wall_at)}.` };
   return { on: true, title: `Running ${MODE_WORD[hb.mode] ?? hb.mode}`, detail: `Updated ${ago(hb.wall_at)}.` };
 }
 
@@ -113,7 +117,7 @@ export default function App() {
         )}
         <AnimatePresence mode="wait">
           <motion.div key={page} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
-            {page === "today" && <LiveView state={live.data} act={act} />}
+            {page === "today" && <LiveView state={live.data} act={act} refresh={live.refresh} />}
             {page === "results" && <PerformanceView defaultMode={control?.heartbeat?.mode ?? "paper"} />}
             {page === "lab" && <LabView control={control} onApplied={() => { live.refresh(); go("settings"); }} />}
             {page === "settings" && <SettingsView control={control} refresh={live.refresh} />}
@@ -121,8 +125,8 @@ export default function App() {
           </motion.div>
         </AnimatePresence>
         <p className="foot">
-          Thunderbot can veto, size and stop trades; it can&apos;t promise profit. Most intraday strategies lose money after costs,
-          so judge every change on the Results page. Charts use <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a> Lightweight Charts.
+          Thunderbot follows rules; it can&apos;t promise profit. A backtest shows what a rule did, not what it will do, and most
+          intraday strategies lose money after costs. Judge every change in the Lab and on the Results page. Charts use <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a> Lightweight Charts.
         </p>
       </main>
 

@@ -22,7 +22,7 @@ const ACTIONS: Record<string, () => Promise<void>> = {
   confirm_login: () => setControl("login_confirmed_for", istToday(), `operator confirmed broker login for ${istToday()}`),
 };
 
-const INVEST_STRATEGIES = new Set(["index_trend", "momentum"]);
+const INVEST_STRATEGIES = new Set(["core_mix", "etf_trend", "etf_rank", "index_trend", "momentum"]);
 
 export async function POST(req: Request) {
   let action: string | undefined;
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
   }
   if (action === "invest_settings") {
     // The worker clamps every parameter to its allowed range; this only checks the shape.
-    if (!body.strategy || !INVEST_STRATEGIES.has(body.strategy)) return fail("strategy must be index_trend or momentum", 400);
+    if (!body.strategy || !INVEST_STRATEGIES.has(body.strategy)) return fail(`strategy must be one of ${[...INVEST_STRATEGIES].join(", ")}`, 400);
     const params = Object.fromEntries(Object.entries(body.params ?? {}).filter(([, v]) => typeof v === "number" && Number.isFinite(v)));
     return guard(async () => {
       await setControl("invest_settings", { strategy: body.strategy, params }, `investing strategy set to ${body.strategy}`);
