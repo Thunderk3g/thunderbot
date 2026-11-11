@@ -53,7 +53,8 @@ The reasoning and sources behind each choice are in
    and `TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY` for the rebalance reviewer.
 3. Deploy. `dashboard/vercel.json` already pins the function to Mumbai (`bom1`), gives it 300 seconds, and
    registers two schedules: a 15-minute tick from 09:00 to 15:45 IST on weekdays (Vercel Schedules, a
-   public beta since 4 November 2026) and the older once-a-day cron as a stand-in. If a deployment ever
+   public beta since 4 November 2026) and the older once-a-day cron as a stand-in, set to fire in the hour
+   after the close (15:30-16:29 IST) so that a missed day is at least made up on closing prices. If a deployment ever
    fails with an error about `schedules`, delete that block from `vercel.json`; Supabase's scheduler in
    step 3 then does the job by itself.
 4. Open the site, log in, and press **Wake the worker** on Today. A heartbeat appears within a few seconds.
@@ -108,7 +109,7 @@ Figures as documented by Vercel and Supabase in November 2026; check them if som
 | Limit | Hobby / free plan | Consequence |
 |---|---|---|
 | Vercel Schedules (beta) | every 15 minutes at most, each run landing somewhere in a 15-minute window; 5,000 runs a month | good enough to act between 15:10 and 15:30; Supabase Cron is the punctual clock |
-| Vercel Cron (legacy) | once a day, firing anywhere within the hour | a stand-in only |
+| Vercel Cron (legacy) | once a day, firing anywhere within its named hour | a stand-in only: set to the hour after the close |
 | Vercel function time | 300 seconds | a tick takes 1-3 seconds; a backtest a few seconds |
 | Vercel Python bundle | 500 MB in the docs | the worker and its dependencies come to about 23 MB |
 | Vercel runtime logs | kept 1 hour | the worker journals to Supabase instead |

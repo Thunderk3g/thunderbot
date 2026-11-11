@@ -809,7 +809,7 @@ DAILY_CATALOG = [
                     "March. No market timing, about six trades a year, very little tax. In our tests no rotation rule beat "
                     "it after tax; its falls are deeper than the trend strategies', and gold's 2019-2026 run flatters it.",
      "params": [
-         {"name": "gold_pct", "label": "Gold share %", "type": "int", "min": 0, "max": 50, "step": 5, "default": 35},
+         {"name": "gold_pct", "label": "Gold share %", "type": "int", "min": 0, "max": 50, "step": 1, "default": 33},
          {"name": "next50_pct", "label": "Next 50 share of the equity part %", "type": "int", "min": 0, "max": 100, "step": 10, "default": 50},
      ]},
     {"name": "etf_trend", "label": "Trend rotation (ETFs or liquid fund)",

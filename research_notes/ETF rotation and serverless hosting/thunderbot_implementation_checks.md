@@ -14,7 +14,7 @@ Supabase (free plan)                               Vercel (Hobby plan, region bo
            + 17:00 IST, + weekends, + watchdog        imports the `thunderbot` package from ../worker
   pg_net:  GET /api/worker, Bearer secret            one pass, then exits; all state is in Supabase
   Vault:   worker URL + cron secret                 Vercel Schedules `*/15 9-15 * * 1-5` Asia/Kolkata (beta)
-                                                     + legacy Vercel Cron `40 9 * * 1-5` as a stand-in
+                                                     + legacy Vercel Cron `0 10 * * 1-5` (15:30-16:29 IST) as a stand-in
 ```
 
 - **One Python function, `dashboard/api/worker.py`, served at `/api/worker`.** `GET` or `POST` with

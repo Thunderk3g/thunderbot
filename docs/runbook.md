@@ -114,7 +114,7 @@ holding a few broad ETFs cheaply and rebalancing rarely. The worker therefore ru
 
 | Strategy | Rule | Our backtest, 2011-2026, Rs 5 lakh, after costs and tax |
 |---|---|---|
-| `core_mix` (default) | NIFTYBEES 32.5%, JUNIORBEES 32.5%, GOLDBEES 35%; rebalance at the end of March | about 12.5% a year, worst fall 23% |
+| `core_mix` (default) | NIFTYBEES, JUNIORBEES and GOLDBEES, a third each; rebalance at the end of March | about 12.5% a year, worst fall 23% |
 | `etf_trend` | the same three ETFs in equal parts, each held only while above its own 200-day average at month-end; a part that is out waits in the liquid ETF | about 8.8% a year, worst fall 15% |
 | `etf_rank` | the two ETFs with the best average 3-, 6- and 12-month return that also beat the liquid ETF | about 8.9% a year, worst fall 21% |
 | `index_trend` | NIFTYBEES while the Nifty is more than 1% above its 200-day average at month-end, else the liquid ETF | about 7.1% a year, worst fall 22% |

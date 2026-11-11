@@ -13,6 +13,6 @@
     }
   },
   "crons": [
-    { "path": "/api/worker", "schedule": "40 9 * * 1-5" }
+    { "path": "/api/worker", "schedule": "0 10 * * 1-5" }
   ]
 }

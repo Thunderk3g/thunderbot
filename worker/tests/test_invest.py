@@ -106,7 +106,7 @@ def test_default_strategy_buys_the_three_etf_mix_and_records_the_plan(tmp_path):
     assert set(st["lots"]) == {"NIFTYBEES", "JUNIORBEES", "GOLDBEES"} and out["did"].startswith("rebalanced")
     plan = st["last_plan"]
     assert {o["symbol"] for o in plan["orders"]} == set(st["lots"]) and all(o["side"] == "BUY" for o in plan["orders"])
-    assert plan["target"]["GOLDBEES"] == 0.35 and plan["late"] is False
+    assert plan["target"]["GOLDBEES"] == 0.33 and plan["late"] is False
     hb = store.get_control()["heartbeat"]
     assert hb["portfolio"]["last_plan"]["orders"] and hb["scheduler"] == "worker" and hb["next_tick_by"]
 

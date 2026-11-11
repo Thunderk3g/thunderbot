@@ -14,7 +14,7 @@ const onOff = { type: "int" as const, min: 0, max: 1, step: 1 };
 export const FALLBACK_DAILY: DailyStrategy[] = [
   { name: "core_mix", label: "Steady mix (Nifty 50, Next 50, gold)", description: "Holds NIFTYBEES, JUNIORBEES and GOLDBEES in fixed shares and rebalances once a year. No market timing.",
     params: [
-      { name: "gold_pct", label: "Gold share %", type: "int", min: 0, max: 50, step: 5, default: 35 },
+      { name: "gold_pct", label: "Gold share %", type: "int", min: 0, max: 50, step: 1, default: 33 },
       { name: "next50_pct", label: "Next 50 share of the equity part %", type: "int", min: 0, max: 100, step: 10, default: 50 },
     ] },
   { name: "etf_trend", label: "Trend rotation (ETFs or liquid fund)", description: "Holds each ETF only while its price is above its 200-day average; a share that is out waits in a liquid ETF.",
