@@ -39,6 +39,34 @@ production, `thunderbot serve` over SQLite locally), so the trading VPS needs no
 The dashboard's API routes run server-side with the service-role key; the browser never sees it.
 The whole app is behind HTTP Basic Auth that fails closed when unconfigured.
 
+## Serverless worker: one pass, then exit
+
+The daily strategies decide once a day, so the worker also exists as a function that is woken, does one
+pass and exits (`thunderbot/serverless.py`, served by `dashboard/api/worker.py` as a Vercel Function).
+
+```
+Supabase pg_cron --(pg_net GET, Bearer secret from Vault)--> /api/worker --> thunderbot.serverless.handle
+                                                                              |-- InvestRunner.tick()   state in `control`
+Vercel Cron (daily backup) ------------------------------->                   |-- JobRunner.run_once()  queued Lab jobs
+Dashboard "Check now" / Lab "Test" (Basic Auth) ---------->                   `-- RemoteStore            Supabase only, retried
+```
+
+- **State:** `RemoteStore` talks only to Supabase and raises on a failed write. There is no local journal
+  to fall back on, and a silently lost portfolio would be worse than a failed run.
+- **Exactly one decision a day:** the run claims `(invest, day)` in `daily_runs` (a unique key) before it
+  decides. A failed run releases the claim; a dead one can be taken over after 15 minutes. Lab jobs are
+  claimed with a conditional update (`status=eq.queued`).
+- **Time rules:** due from 15:10 IST. Paper runs late on closing prices if it must. Live never trades
+  after 15:25: it marks the day missed, alerts, and decides afresh next session.
+- **Guards before trading:** missing, stale or jumping prices postpone the rebalance. These are rules and
+  run before any reviewer.
+- **Two doors, one lock:** the Next.js middleware lets `/api/worker` through with the cron secret, and the
+  function checks the secret (or the dashboard login) again itself.
+- **No live orders here:** a function has no address of its own, and brokers accept API orders only from
+  the static IP registered to the account.
+
+`thunderbot tick` is the same pass from a command line, for laptop schedulers and CI.
+
 ## Design principles
 
 1. **The quant engine decides what to trade. The LLM can only say "less" or "no".**
@@ -121,6 +149,14 @@ training, which inflates backtests through look-ahead bias. So:
   with outcomes you can join on `signal_id`) over several weeks before trusting it with size.
 - Model: `claude-opus-5-5` at `effort=medium`, one call per signal (a handful per day), with server-side
   refusal fallback enabled. Change it with `TB_LLM_MODEL` / `TB_LLM_EFFORT`.
+
+For the daily strategies the LLM has a narrower job (`thunderbot/llm/rebalance.py`). It reads the orders a
+rule is about to place and the prices behind them and looks for what rules miss: a price series that looks
+broken, orders that do not match the target. It may approve the rebalance or postpone it one session, at
+most twice in a row; it cannot change an order, and if it fails the rule proceeds. It makes no market
+forecast, because the evidence (see `reports/`) does not support LLM forecasts for a small account. A
+walk-forward machine-learning market filter was also tested and not adopted: its pre-tax edge over holding
+the Nifty disappeared after tax (`research_notes/ETF rotation and serverless hosting/thunderbot_backtests.md`).
 
 ## Known limitations and next steps
 

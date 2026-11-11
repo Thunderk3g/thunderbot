@@ -1,6 +1,7 @@
 # Runbook
 
-Build in four stages and don't skip any. Each stage has an exit criterion.
+For the daily strategies with no server, start at [`no-server.md`](no-server.md) and come back here for
+live trading. The stages below describe the long-running worker; build in order and don't skip any.
 
 ## Stage 0 - Learn the cockpit (local, no accounts)
 
@@ -73,7 +74,7 @@ Groww's intraday history depth is disputed (3 months vs. "from 2020").
 5. **Dashboard:** import `dashboard/` as a Vercel project (root directory `dashboard`) and set
    `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DASHBOARD_USER` and `DASHBOARD_PASSWORD`. Never
    use a `NEXT_PUBLIC_` prefix for the service key.
-6. Fill `worker/deploy/nse_holidays.txt` with this year's NSE holidays.
+6. Check the NSE holiday list (`worker/thunderbot/universes/nse_holidays.txt`, also copied to `worker/deploy/`) each December and add the new year.
 7. Optional: set `TB_LLM_ENABLED=true` and `ANTHROPIC_API_KEY` to start collecting LLM decisions.
 
 Exit criterion: paper results within reasonable distance of the backtest, no `exit_failed`,
@@ -106,23 +107,48 @@ Raise `TB_CAPITAL` gradually. Keep `TB_MAX_LEVERAGE=1` until you have a long liv
 
 ## Daily investing (the default)
 
-Our research (`reports/Evidence based NSE trading strategies.md`) found no support for intraday
-trading by retail traders: 71% of SEBI-studied intraday traders lost money in FY23, and our own
-intraday strategies lost on real data. The worker service therefore runs `thunderbot invest`:
-a slow, daily delivery (CNC) strategy.
+Our research found no support for intraday trading by retail traders, and no support for an LLM or a
+machine-learning model picking trades for a small account (`reports/`). What the evidence does support is
+holding a few broad ETFs cheaply and rebalancing rarely. The worker therefore runs a slow, daily delivery
+(CNC) strategy, chosen in **Lab -> Invest (daily)** or with `TB_INVEST_STRATEGY`:
 
-- `TB_INVEST_STRATEGY=index_trend` (default): hold NIFTYBEES while the Nifty is more than 1% above
-  its 200-day average at month-end; hold cash when it is more than 1% below. Backtest 2011-2026:
-  about 8% a year after costs and tax, worst fall about -17%, against 9.5% before tax and -36% for
-  simply holding NIFTYBEES.
-- `TB_INVEST_STRATEGY=momentum`: the top 15 Nifty 100 stocks by NSE-style momentum, re-ranked every
-  quarter, with the same monthly market filter. The backtest uses today's index members, so its
-  numbers are inflated by survivorship bias; expect roughly market + 3-5 points a year over a full
-  cycle, with long stretches of underperformance.
+| Strategy | Rule | Our backtest, 2011-2026, Rs 5 lakh, after costs and tax |
+|---|---|---|
+| `core_mix` (default) | NIFTYBEES 32.5%, JUNIORBEES 32.5%, GOLDBEES 35%; rebalance at the end of March | about 12.5% a year, worst fall 23% |
+| `etf_trend` | the same three ETFs in equal parts, each held only while above its own 200-day average at month-end; a part that is out waits in the liquid ETF | about 8.8% a year, worst fall 15% |
+| `etf_rank` | the two ETFs with the best average 3-, 6- and 12-month return that also beat the liquid ETF | about 8.9% a year, worst fall 21% |
+| `index_trend` | NIFTYBEES while the Nifty is more than 1% above its 200-day average at month-end, else the liquid ETF | about 7.1% a year, worst fall 22% |
+| `momentum` | the top 15 Nifty 100 stocks by momentum, quarterly | not trustworthy: the stock list is today's index |
 
-The runner acts once a day at `TB_INVEST_AT` (15:10 IST) and trades only on the last trading day of
-the month (or when the portfolio is empty). Test either strategy first in **Lab -> Invest (daily)**,
-or with `thunderbot invest-backtest --strategy momentum --years 15`.
+Holding NIFTYBEES alone made about 10.1% a year before tax (9.4% if sold and taxed at the end) with a
+worst fall of 36%. Read those numbers with three cautions. They are backtests of sixteen years, not
+promises. Gold rose about 19% a year from 2019 to 2026 and every result that holds gold is flattered by
+it. And no timing rule beat simply holding the same ETFs: the trend rules trade about 3 to 4 points a year
+of return for a shallower worst fall. Plan for less than the backtests: see the ranges in the report.
+
+The worker checks once a day at `TB_INVEST_AT` (15:10 IST). `core_mix` trades once a year; the trend rules
+trade at month-end, and only when a holding changes. Idle money is parked in `TB_LIQUID_SYMBOL`
+(LIQUIDCASE, a growth-type liquid ETF). Test from the command line with
+`thunderbot invest-backtest --strategy etf_trend --years 15`.
+
+Two ways to run it:
+
+- **No server (recommended to start):** [`docs/no-server.md`](no-server.md). Supabase's scheduler wakes a
+  function on Vercel every five minutes in market hours. Paper trading, backtests and alerts; you place
+  the few real orders by hand in the Groww app.
+- **A machine with a static IP (needed for live API orders):** `thunderbot invest` as a service on a small
+  VPS (the stages above), or `thunderbot tick` from a laptop scheduler (`worker/deploy/laptop/`).
+
+## Taxes the backtests assume (financial year 2026-27)
+
+| Instrument | Up to 12 months | After 12 months |
+|---|---|---|
+| Equity ETFs (NIFTYBEES, JUNIORBEES) | 20% | 12.5% on gains above Rs 1.25 lakh a year |
+| Gold and silver ETFs | your income-tax slab rate | 12.5%, no exemption |
+| Liquid and other debt ETFs | your slab rate | your slab rate (never long-term) |
+
+Plus 4% cess. Set your slab with `TB_SLAB_RATE_PCT` (default 30) or the slider in the Lab. This is the
+model's reading of the rules, not tax advice; check your own position before filing.
 
 ## Starting and stopping
 
@@ -132,8 +158,9 @@ open position and takes no new trades; the worker keeps running and waits for th
 Start and stop survive restarts, since they live in the control table.
 
 Paper trading uses live prices and simulates only the orders. `TB_FEED` picks the prices:
-`yahoo` (default) is free Yahoo Finance data through the open-source `yfinance` library, with no
-account needed, but it is unofficial and can lag the exchange; `groww` is Groww's official feed
+`yahoo` (default) is free Yahoo Finance data, with no account needed, but it is unofficial and can lag
+the exchange (the daily strategies call Yahoo's chart endpoint directly; intraday paper trading uses the
+open-source `yfinance` library for quotes); `groww` is Groww's official feed
 (LTP every few seconds, 5-minute candles), which needs a working Groww login and the paid
 Live Data plan. Live trading always uses Groww.
 

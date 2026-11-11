@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/thunderbot-tick.service  (edit the two paths)
+[Unit]
+Description=Thunderbot daily investing check (one pass)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/thunderbot/worker
+ExecStart=%h/thunderbot/worker/.venv/bin/thunderbot tick
+TimeoutStartSec=600
