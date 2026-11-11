@@ -110,7 +110,7 @@ Figures as documented by Vercel and Supabase in November 2026; check them if som
 | Vercel Schedules (beta) | every 15 minutes at most, each run landing somewhere in a 15-minute window; 5,000 runs a month | good enough to act between 15:10 and 15:30; Supabase Cron is the punctual clock |
 | Vercel Cron (legacy) | once a day, firing anywhere within the hour | a stand-in only |
 | Vercel function time | 300 seconds | a tick takes 1-3 seconds; a backtest a few seconds |
-| Vercel Python bundle | 500 MB | the worker and its dependencies are a small fraction of that |
+| Vercel Python bundle | 500 MB in the docs | the worker and its dependencies come to about 23 MB |
 | Vercel runtime logs | kept 1 hour | the worker journals to Supabase instead |
 | Vercel Hobby terms | non-commercial use only | fine for a personal bot; your call to make |
 | Supabase pg_cron | once a minute at most, UTC | schedules are written in UTC and gated to IST in SQL |
@@ -134,7 +134,7 @@ To place live orders automatically you need one machine with an address of your 
 
 | Option | Rough cost | Notes |
 |---|---|---|
-| Your laptop on home broadband with a static IP | Rs 2,000-7,000 a year for the IP | No server. Use `worker/deploy/laptop/`. The laptop must be awake at 15:10 IST. |
+| Your laptop on home broadband with a static IP | roughly Rs 300-1,000 a month for the IP; quotes vary by provider | No server. Use `worker/deploy/laptop/`. The laptop must be awake at 15:10 IST. |
 | A small Mumbai VPS | about $4-6 a month | Run `thunderbot invest --live` there (`worker/deploy/bootstrap.sh`). It is a server, but a tiny one. |
 | Oracle Cloud's free VM | free | Comes with a public IP you can reserve (check the current terms); free instances can be reclaimed when idle. |
 
