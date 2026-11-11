@@ -115,7 +115,7 @@ Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=t
 
 ```
 worker/      Python package: daily and intraday strategies, backtesters, paper and Groww brokers,
-             reviewers, the serverless entry point, local API, CLI. 140 tests.
+             reviewers, the serverless entry point, local API, CLI. 147 tests.
 dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
              api/worker.py is the Python function that runs the worker on Vercel
 supabase/    Postgres schema and the pg_cron / pg_net / Vault scheduler

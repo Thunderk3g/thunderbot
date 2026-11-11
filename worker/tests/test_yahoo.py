@@ -87,13 +87,23 @@ def test_quotes_report_empty_answers():
 
 
 def test_job_loader_yahoo_source(settings, monkeypatch):
-    import thunderbot.yahoo as y
+    """The Lab's Yahoo source reads the chart endpoint directly (no pandas or yfinance needed)."""
+    import thunderbot.chart as chart
 
-    monkeypatch.setattr(y, "_download", lambda **kw: bars_frame(datetime.now(IST).replace(hour=9, minute=15, second=0, microsecond=0) - timedelta(days=1), 10))
+    first = datetime.now(IST).replace(hour=9, minute=15, second=0, microsecond=0) - timedelta(days=1)
+    bars = [(first + timedelta(minutes=5 * i), 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, 1000.0) for i in range(10)]
+    monkeypatch.setattr(chart, "fetch_candles", lambda symbol, interval, start, end, get=None: bars)
     monkeypatch.setattr("thunderbot.jobs.time.sleep", lambda s: None)
     today = datetime.now(IST).date()
     data, note = DataLoader(settings).load("yahoo", ["AAA"], today - timedelta(days=10), today)
-    assert len(data["AAA"]) == 10 and "Yahoo" in note
-    monkeypatch.setattr(y, "_download", lambda **kw: pd.DataFrame())
+    assert len(data["AAA"]) == 10 and "Yahoo" in note and data["AAA"][0].close == 100.5
+    monkeypatch.setattr(chart, "fetch_candles", lambda symbol, interval, start, end, get=None: [])
     with pytest.raises(JobError):
+        DataLoader(settings).load("yahoo", ["AAA"], today - timedelta(days=10), today)
+
+    def refused(symbol, interval, start, end, get=None):
+        raise chart.ChartError("HTTP 404")
+
+    monkeypatch.setattr(chart, "fetch_candles", refused)
+    with pytest.raises(JobError, match="HTTP 404"):
         DataLoader(settings).load("yahoo", ["AAA"], today - timedelta(days=10), today)

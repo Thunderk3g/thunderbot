@@ -70,14 +70,22 @@ class DataLoader:
         start_dt = datetime.combine(start, datetime.min.time(), tzinfo=IST)
         end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=IST)
         if source == "yahoo":
+            from .chart import ChartError
             from .yahoo import YahooMarketData
 
             md = YahooMarketData(exchange=self.s.exchange)
             floor = md.earliest(interval)
             data = {}
+            failed = []
             for sym in symbols:
-                data[sym] = md.candles(sym, interval, start_dt, end_dt)
+                try:
+                    data[sym] = md.candles(sym, interval, start_dt, end_dt)
+                except ChartError as e:  # one unknown or refused symbol must not sink the rest
+                    data[sym] = []
+                    failed.append(f"{sym} ({e})")
                 time.sleep(0.2)  # be gentle with a free service
+            if failed and not any(data.values()):
+                raise JobError("Yahoo returned no candles: " + "; ".join(failed))
             if not any(data.values()):
                 raise JobError(f"Yahoo returned no {interval}-minute candles for these dates. Yahoo keeps "
                                f"{interval}-minute bars only since {floor:%d %b %Y}." if floor else
