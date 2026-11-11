@@ -26,6 +26,7 @@ HARD_MAX_DAILY_LOSS_PCT = 10.0
 LATEST_FLATTEN = "15:15"  # Groww auto-squares MIS at 15:20
 
 LLM_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_HOLIDAYS = Path(__file__).parent / "universes" / "nse_holidays.txt"  # used when TB_HOLIDAYS_FILE is unset
 
 # Keys the dashboard may change at runtime, with (type, min, max) bounds.
 # Live trading, MTF, the static IP, credentials and login policy are deliberately absent:
@@ -131,8 +132,16 @@ class Settings:
     groww_totp_secret: str | None = None
     groww_api_secret: str | None = None
     expected_static_ip: str | None = None
-    invest_strategy: str = "index_trend"  # daily delivery strategy for `thunderbot invest`: index_trend | momentum
+    invest_strategy: str = "core_mix"  # daily strategy: core_mix | etf_trend | etf_rank | index_trend | momentum
     invest_at: str = "15:10"  # IST time of the daily decision (prices then stand in for the close)
+    invest_cutoff: str = "15:25"  # a live run that starts after this does not trade; it tries again next session
+    liquid_symbol: str = "LIQUIDCASE"  # the growth-type liquid ETF that idle money is parked in
+    slab_rate_pct: float = 30.0  # your marginal income-tax rate, for liquid and short-term gold ETF gains
+    tick_minutes: float = 5.0  # how often a scheduler calls the serverless worker during market hours
+    cron_secret: str | None = None  # shared secret the schedulers send to the serverless worker
+    telegram_token: str | None = None
+    telegram_chat_id: str | None = None
+    ntfy_topic: str | None = None
     feed: str = "yahoo"  # price source for paper trading: groww (official, paid plan) | yahoo (free, can lag)
     live_trading_enabled: bool = False
     allow_mtf_api: bool = False
@@ -189,6 +198,14 @@ class Settings:
             feed=(_env("TB_FEED", cls.feed) or cls.feed).strip().lower(),
             invest_strategy=(_env("TB_INVEST_STRATEGY", cls.invest_strategy) or cls.invest_strategy).strip().lower(),
             invest_at=_env("TB_INVEST_AT", cls.invest_at) or cls.invest_at,
+            invest_cutoff=_env("TB_INVEST_CUTOFF", cls.invest_cutoff) or cls.invest_cutoff,
+            liquid_symbol=(_env("TB_LIQUID_SYMBOL", cls.liquid_symbol) or cls.liquid_symbol).strip().upper(),
+            slab_rate_pct=_env_float("TB_SLAB_RATE_PCT", cls.slab_rate_pct),
+            tick_minutes=_env_float("TB_TICK_MINUTES", cls.tick_minutes),
+            cron_secret=_env("CRON_SECRET"),
+            telegram_token=_env("TB_TELEGRAM_TOKEN"),
+            telegram_chat_id=_env("TB_TELEGRAM_CHAT_ID"),
+            ntfy_topic=_env("TB_NTFY_TOPIC"),
             data_dir=_env("TB_DATA_DIR", cls.data_dir) or cls.data_dir,
             backtest_data_dir=_env("TB_BACKTEST_DATA_DIR", cls.backtest_data_dir) or cls.backtest_data_dir,
             supabase_url=_env("SUPABASE_URL"),
@@ -212,6 +229,7 @@ class Settings:
         if self.feed not in ("groww", "yahoo"):
             self.warnings.append(f"TB_FEED={self.feed!r} is not groww or yahoo; using yahoo")
             self.feed = "yahoo"
+        self.slab_rate_pct = min(max(self.slab_rate_pct, 0.0), 45.0)
         if self.llm_fail_mode not in ("reject", "pass"):
             self.warnings.append(f"llm_fail_mode={self.llm_fail_mode!r} invalid; using 'reject'")
             self.llm_fail_mode = "reject"
@@ -290,6 +308,9 @@ class Settings:
                 "static_ip_configured": bool(self.expected_static_ip),
                 "groww_configured": bool(self.groww_api_key),
                 "feed": self.feed,
+                "liquid_symbol": self.liquid_symbol,
+                "slab_rate_pct": self.slab_rate_pct,
+                "notifications": bool((self.telegram_token and self.telegram_chat_id) or self.ntfy_topic),
                 "llm_model": self.llm_model,
                 "orders_per_second": self.orders_per_second,
             },
@@ -309,7 +330,7 @@ class Settings:
             entry_start=parse_hhmm(self.entry_start),
             entry_end=parse_hhmm(self.entry_end),
             flatten_at=parse_hhmm(self.flatten_at),
-            holidays=load_holidays(self.holidays_file),
+            holidays=load_holidays(self.holidays_file or DEFAULT_HOLIDAYS),
         )
 
     @property

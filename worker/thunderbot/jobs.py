@@ -150,9 +150,8 @@ class JobRunner:
 
     def publish_catalog(self) -> None:
         """Let the dashboard's Lab render even when only the job runner is up."""
-        from .strategy import catalog
-
         from .daily import DAILY_CATALOG
+        from .strategy import catalog
 
         self.store.set_control("strategy_catalog", catalog())
         self.store.set_control("daily_catalog", DAILY_CATALOG)
@@ -175,12 +174,19 @@ class JobRunner:
                 log.exception("job loop error")
                 time.sleep(self.poll)
 
-    def run_once(self) -> bool:
-        queued = self.store.select("jobs", {"status": "queued"}, order="created_at", desc=False, limit=1)
+    def run_once(self, job_id: str | None = None) -> str | None:
+        """Run the oldest queued job (or the one named). Returns its id, or None if there was nothing to run."""
+        filters = {"status": "queued", **({"id": job_id} if job_id else {})}
+        queued = self.store.select("jobs", filters, order="created_at", desc=False, limit=1)
         if not queued:
-            return False
+            return None
         job = queued[0]
-        self.store.update("jobs", job["id"], {"status": "running", "started_at": now_ist().isoformat(), "progress": 0.0})
+        claim = getattr(self.store, "claim_job", None)
+        if claim:
+            if not claim(job["id"]):
+                return None  # another run took it first
+        else:
+            self.store.update("jobs", job["id"], {"status": "running", "started_at": now_ist().isoformat(), "progress": 0.0})
         try:
             result = self.execute(job["kind"], job.get("params") or {},
                                   progress=lambda p: self.store.update("jobs", job["id"], {"progress": round(p, 3)}))
@@ -193,7 +199,7 @@ class JobRunner:
             self.store.update("jobs", job["id"], {"status": "error", "error": f"{type(e).__name__}: {e}",
                                                   "trace": traceback.format_exc()[-2000:],
                                                   "finished_at": now_ist().isoformat()})
-        return True
+        return job["id"]
 
     # Job kinds
 
@@ -235,33 +241,53 @@ class JobRunner:
         """Daily-bar delivery strategy over many years, after Indian costs and capital-gains tax."""
         from . import daily
 
-        name = params.get("strategy", "index_trend")
+        name = params.get("strategy", daily.DAILY_NAMES[0])
         try:
             strat = daily.build_daily(name, params.get("strategy_params"))
+            used = daily.daily_params(name, params.get("strategy_params"))
         except ValueError as e:
             raise JobError(str(e)) from e
-        years = min(max(int(params.get("years") or 15), 3), 18)
+        years = min(max(int(params.get("years") or 15), 3), 17)
         capital = min(max(float(params.get("capital") or 500_000), 10_000), 1e9)
+        slab = min(max(float(params.get("slab_rate_pct", self.base.slab_rate_pct)), 0.0), 45.0)
         end = now_ist().date()
         start = end - timedelta(days=int(years * 365.25))
         progress(0.1)
-        symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *getattr(strat, "symbols", []),
-                                      getattr(strat, "asset", daily.BENCHMARK)]))
-        prices = daily.load_prices(symbols, start - timedelta(days=420), end,
-                                   cache_dir=self.base.data_path / "cache" / "daily")
+        twin = daily.no_timing_twin(strat)
+        symbols = list(dict.fromkeys([daily.INDEX, daily.BENCHMARK, *strat.universe(), *(twin.universe() if twin else [])]))
+        errors: dict[str, str] = {}
+        prices = daily.load_prices(symbols, start - timedelta(days=460), end, errors=errors)
+        if daily.INDEX not in prices or daily.BENCHMARK not in prices:
+            raise JobError("Yahoo Finance returned no prices for the Nifty or NIFTYBEES just now "
+                           f"({'; '.join(f'{k}: {v}' for k, v in errors.items()) or 'empty reply'}). Try again in a minute.")
         progress(0.6)
-        res = daily.backtest(strat, prices, start, end, capital=capital,
-                             tax=daily.CapitalGainsTax() if params.get("tax", True) else None,
-                             cash_yield_pct=float(params.get("cash_yield_pct", 6.0)))
-        note = ("Daily Yahoo Finance prices, split- and dividend-adjusted, with known bad ticks repaired. "
-                "Costs: Groww delivery charges, STT, stamp duty, GST, DP and 0.05% slippage per side. "
-                "Tax: 20% on gains held up to 12 months, 12.5% above Rs 1.25 lakh a year after that. "
-                "Idle cash earns 6% a year (a liquid fund). The benchmark is NIFTYBEES held throughout, before tax.")
+        tax = daily.CapitalGainsTax(slab_rate=slab / 100) if params.get("tax", True) else None
+        legacy_cash = float(params.get("cash_yield_pct", 0.0)) if getattr(strat, "cash_asset", None) is None else 0.0
+        res = daily.backtest(strat, prices, start, end, capital=capital, tax=tax, cash_yield_pct=legacy_cash)
+        comparators = []
+        if twin is not None:
+            progress(0.8)
+            t = daily.backtest(twin, prices, start, end, capital=capital, tax=tax).metrics()
+            comparators.append({"label": "Same ETFs, equal parts, no timing",
+                                **{k: t[k] for k in ("cagr_pct", "cagr_after_exit_tax_pct", "max_drawdown_pct", "final_value", "trades")}})
+        first = min((min(prices[s]) for s in strat.universe() if s in prices and s not in (daily.INDEX, daily.LIQUID)), default=start)
+        note = ("Daily Yahoo Finance prices, adjusted, with known bad ticks repaired; decisions fill at the next day's close. "
+                "Costs: Groww delivery charges, STT where it applies, stamp duty, GST, DP and 0.05% slippage per side. "
+                f"Tax: equity ETFs 20% up to 12 months, 12.5% above Rs 1.25 lakh a year after; gold ETFs your slab rate "
+                f"({slab:.0f}%) up to 12 months, 12.5% after; the liquid ETF always at your slab rate; 4% cess. "
+                "The liquid ETF is modelled from each year's overnight rate less 0.30% costs. "
+                "The Nifty ETF line is NIFTYBEES held throughout. A backtest shows what a rule did, not what it will do.")
+        if first > start:
+            note += f" The ETFs' price history starts on {first:%d %b %Y}, so earlier years are not tested."
+        if errors:
+            note += " No data for: " + ", ".join(sorted(errors)) + "."
         if name == "momentum":
             note += (" WARNING: the stock list is today's Nifty 100, so stocks that fell out of the index are missing. "
                      "That survivorship bias inflates the result by several points a year.")
-        return {**daily.result_payload(res), "strategy": name, "strategy_params": params.get("strategy_params") or {},
-                "data_note": note, "years": years, "capital": capital}
+        if name in ("core_mix", "etf_trend", "etf_rank") and "GOLDBEES" in strat.universe():
+            note += " Gold rose about 19% a year from 2019 to 2026, far above its long-run rate; results that include it are flattered."
+        return {**daily.result_payload(res), "strategy": name, "strategy_params": used, "comparators": comparators,
+                "data_note": note, "years": years, "capital": capital, "slab_rate_pct": slab}
 
     def backtest(self, params: dict[str, Any], progress) -> dict[str, Any]:
         strategy, s, data, note = self._common(params)

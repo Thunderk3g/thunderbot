@@ -24,7 +24,7 @@ from .clock import now_ist
 
 log = logging.getLogger(__name__)
 
-TABLES = ("events", "signals", "llm_decisions", "orders", "trades", "jobs", "equity", "signal_outcomes")
+TABLES = ("events", "signals", "llm_decisions", "orders", "trades", "jobs", "equity", "signal_outcomes", "daily_runs")
 
 
 def _matches(row: dict[str, Any], filters: dict[str, Any] | None) -> bool:
@@ -131,6 +131,11 @@ class SQLiteStore:
             )
             self._conn.commit()
 
+    def delete(self, table: str, ids: list[str]) -> None:
+        with self._lock:
+            self._conn.executemany("DELETE FROM journal WHERE id = ? AND tbl = ?", [(i, table) for i in ids])
+            self._conn.commit()
+
     def get_control(self) -> dict[str, Any]:
         with self._lock:
             cur = self._conn.execute("SELECT key, value FROM control")
@@ -181,6 +186,26 @@ class SupabaseStore:
     def update(self, table: str, row_id: str, fields: dict[str, Any]) -> None:
         resp = self.http.patch(f"{self.base}/{table}", params={"id": f"eq.{row_id}"},
                                data=json.dumps(_jsonable(fields), default=str), timeout=self.timeout)
+        resp.raise_for_status()
+
+    def insert_new(self, table: str, row: dict[str, Any]) -> bool:
+        """Insert without upsert. False when a row with the same unique key already exists."""
+        resp = self.http.post(f"{self.base}/{table}", data=json.dumps(_jsonable(row), default=str),
+                              headers={"Prefer": "return=minimal"}, timeout=self.timeout)
+        if resp.status_code == 409:
+            return False
+        resp.raise_for_status()
+        return True
+
+    def update_where(self, table: str, where: dict[str, str], fields: dict[str, Any]) -> list[dict[str, Any]]:
+        """Conditional update (PostgREST filters such as ``{"status": "eq.queued"}``). Returns the rows changed."""
+        resp = self.http.patch(f"{self.base}/{table}", params=where, data=json.dumps(_jsonable(fields), default=str),
+                               headers={"Prefer": "return=representation"}, timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json() if resp.content else []
+
+    def delete(self, table: str, row_id: str) -> None:
+        resp = self.http.delete(f"{self.base}/{table}", params={"id": f"eq.{row_id}"}, timeout=self.timeout)
         resp.raise_for_status()
 
     def get_control(self) -> dict[str, Any]:
@@ -254,6 +279,92 @@ class CompositeStore:
     def event(self, kind: str, message: str, **data: Any) -> None:
         log.info("[%s] %s", kind, message)
         self.insert("events", {"kind": kind, "message": message, "data": data})
+
+
+class RemoteStore:
+    """Supabase as the only store, for runs that have no disk of their own (serverless functions,
+    GitHub Actions, a laptop job that should share state with the dashboard).
+
+    Unlike ``CompositeStore`` there is no local journal to fall back on, so a failed write is retried
+    and then raised: losing the saved portfolio silently would be worse than failing the run.
+    """
+
+    def __init__(self, remote: SupabaseStore, attempts: int = 3, sleep=None) -> None:
+        import time
+
+        self.remote = remote
+        self.mirror = remote  # so callers that look for a mirror find one
+        self.attempts = attempts
+        self._sleep = sleep or time.sleep
+
+    def _retry(self, fn, *args, **kwargs):
+        last: Exception | None = None
+        for i in range(self.attempts):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:  # network errors and 5xx; a 4xx will fail the same way again, quickly
+                last = e
+                self._sleep(0.4 * (i + 1))
+        raise RuntimeError(f"Supabase request failed after {self.attempts} attempts: {last}") from last
+
+    def insert(self, table: str, row: dict[str, Any]) -> None:
+        row = _jsonable(row)
+        row.setdefault("id", new_id())
+        row.setdefault("created_at", now_ist().isoformat())
+        self._retry(self.remote.insert, table, row)
+
+    def select(self, table: str, filters: dict[str, Any] | None = None, order: str = "created_at",
+               desc: bool = True, limit: int = 100) -> list[dict[str, Any]]:
+        return self._retry(self.remote.select, table, filters, order, desc, limit)
+
+    def update(self, table: str, row_id: str, fields: dict[str, Any]) -> None:
+        self._retry(self.remote.update, table, row_id, fields)
+
+    def get_control(self) -> dict[str, Any]:
+        return self._retry(self.remote.get_control)
+
+    def set_control(self, key: str, value: Any) -> None:
+        self._retry(self.remote.set_control, key, value)
+
+    def event(self, kind: str, message: str, **data: Any) -> None:
+        log.info("[%s] %s", kind, message)
+        self.insert("events", {"kind": kind, "message": message, "data": data})
+
+    # Locks: two schedulers may call the worker at the same moment; only one may act.
+
+    def claim(self, kind: str, day: str, stale_after_s: float = 900.0) -> str | None:
+        """Take the lock for (kind, day). Returns a claim id, or None if another run holds it or
+        already finished. A run that died without finishing can be taken over after ``stale_after_s``."""
+        from datetime import timedelta
+
+        row = {"id": new_id(), "created_at": now_ist().isoformat(), "kind": kind, "day": day, "status": "running"}
+        if self.remote.insert_new("daily_runs", row):
+            return row["id"]
+        held = self.select("daily_runs", {"kind": kind, "day": day}, limit=1)
+        if not held or held[0].get("status") != "running":
+            return None
+        cutoff = (now_ist() - timedelta(seconds=stale_after_s)).isoformat()
+        taken = self.remote.update_where("daily_runs", {"id": f"eq.{held[0]['id']}", "status": "eq.running",
+                                                        "created_at": f"lt.{cutoff}"},
+                                         {"created_at": now_ist().isoformat()})
+        return held[0]["id"] if taken else None
+
+    def finish(self, claim_id: str, status: str = "done", detail: dict[str, Any] | None = None) -> None:
+        self.update("daily_runs", claim_id, {"status": status, "detail": _jsonable(detail or {})})
+
+    def release(self, claim_id: str) -> None:
+        """Give the lock back after a failure, so the next tick can try again."""
+        self._retry(self.remote.delete, "daily_runs", claim_id)
+
+    def claim_job(self, job_id: str) -> bool:
+        return bool(self.remote.update_where("jobs", {"id": f"eq.{job_id}", "status": "eq.queued"},
+                                             {"status": "running", "started_at": now_ist().isoformat(), "progress": 0.0}))
+
+
+def build_remote_store(supabase_url: str | None, supabase_key: str | None, timeout: float = 10.0) -> RemoteStore:
+    if not supabase_url or not supabase_key:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
+    return RemoteStore(SupabaseStore(supabase_url, supabase_key, timeout=timeout))
 
 
 def build_store(data_dir: Path, supabase_url: str | None, supabase_key: str | None) -> CompositeStore:
