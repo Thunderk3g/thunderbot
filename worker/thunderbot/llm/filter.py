@@ -233,4 +233,8 @@ def build_filter(settings: Settings, reviewer: str = "auto") -> SignalFilter:
         return HeuristicFilter(settings)
     if reviewer == "none" or not settings.llm_enabled:
         return PassThroughFilter()
+    if settings.chat_llm:
+        from .trader import ChatSignalFilter
+
+        return ChatSignalFilter(settings)
     return ClaudeSignalFilter(settings)

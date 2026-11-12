@@ -16,6 +16,7 @@ class ReviewContext:
     day_realized_pnl: float = 0.0
     trades_today: int = 0
     market_notes: list[str] = field(default_factory=list)  # e.g. index trend, headlines
+    extra: dict[str, Any] = field(default_factory=dict)  # AI desk context: market regime, model track record, lessons
 
 
 @dataclass

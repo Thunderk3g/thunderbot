@@ -5,8 +5,8 @@ laptop's task scheduler) calls ``handle`` every few minutes during market hours,
 calls it to run a backtest. Everything it knows between calls is in Supabase.
 
 Operations:
-- ``tick``: one pass of the daily investing runner (heartbeat, the 15:10 decision when due), then any
-  research jobs still queued.
+- ``tick``: one pass of the daily investing runner (heartbeat, the 15:10 decision when due), one bar of
+  the AI intraday desk (paper), then any research or training jobs still queued.
 - ``job``: run one queued research job now (``id`` selects it), within the function's time limit.
 - ``health``: configuration check that touches nothing.
 
@@ -65,6 +65,21 @@ def build_runner(settings: Settings, store: Any, scheduler: str = "serverless"):
     )
 
 
+def run_intraday(settings: Settings, store: Any) -> dict[str, Any]:
+    """One bar of the AI desk. Its failure is journalled and must not take the investing tick down with it."""
+    from .ai.runner import IntradayRunner
+
+    try:
+        return IntradayRunner(settings, store).tick()
+    except Exception as e:
+        log.exception("AI desk tick failed")
+        try:
+            store.event("error", f"AI desk tick failed: {type(e).__name__}: {e}")
+        except Exception:
+            pass
+        return {"intraday": f"error: {type(e).__name__}: {e}"}
+
+
 def run_jobs(settings: Settings, store: Any, deadline: float, job_id: str | None = None) -> list[str]:
     """Run queued research jobs until none are left or the time budget is nearly spent."""
     from .jobs import JobRunner
@@ -95,7 +110,7 @@ def handle(op: str, params: dict[str, str] | None = None, settings: Settings | N
         if op == "health":
             return 200, {"ok": True, "at": now_ist().isoformat(), "supabase": bool(settings.supabase_url and settings.supabase_service_key),
                          "strategy": settings.invest_strategy, "run_at": settings.invest_at, "liquid_symbol": settings.liquid_symbol,
-                         "reviewer": settings.llm_enabled, "mode": "paper"}
+                         "reviewer": settings.llm_enabled, "llm": settings.llm_provider, "mode": "paper"}
         store = store or build_remote_store(settings.supabase_url, settings.supabase_service_key)
         deadline = started + budget_seconds
         if op == "job":
@@ -103,8 +118,9 @@ def handle(op: str, params: dict[str, str] | None = None, settings: Settings | N
             return 200, {"ok": True, "jobs": ran, "seconds": round(time.monotonic() - started, 1)}
         publish_catalog(settings, store)
         summary = build_runner(settings, store).tick()
+        desk = run_intraday(settings, store)
         ran = run_jobs(settings, store, deadline)
-        return 200, {"ok": True, **summary, "jobs": ran, "seconds": round(time.monotonic() - started, 1)}
+        return 200, {"ok": True, **summary, **desk, "jobs": ran, "seconds": round(time.monotonic() - started, 1)}
     except Exception as e:
         log.exception("serverless %s failed", op)
         try:

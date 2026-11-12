@@ -4,12 +4,14 @@ import dataclasses
 from typing import Any
 
 from .base import Strategy
+from .ai import AIEnsemble
 from .ema_pullback import EMAPullback
+from .momentum import MomentumBurst
 from .orb import OpeningRangeBreakout
 from .vwap_reversion import VWAPReversion
 
 STRATEGIES: dict[str, type[Strategy]] = {
-    cls.name: cls for cls in (OpeningRangeBreakout, VWAPReversion, EMAPullback)
+    cls.name: cls for cls in (OpeningRangeBreakout, VWAPReversion, EMAPullback, MomentumBurst, AIEnsemble)
 }
 
 
@@ -52,5 +54,5 @@ def catalog() -> list[dict[str, Any]]:
     return out
 
 
-__all__ = ["Strategy", "OpeningRangeBreakout", "VWAPReversion", "EMAPullback", "STRATEGIES",
+__all__ = ["Strategy", "OpeningRangeBreakout", "VWAPReversion", "EMAPullback", "MomentumBurst", "AIEnsemble", "STRATEGIES",
            "build_strategy", "catalog", "coerce_params"]

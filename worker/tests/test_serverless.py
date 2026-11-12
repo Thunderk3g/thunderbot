@@ -119,8 +119,9 @@ def test_handle_health_tick_and_errors(tmp_path, monkeypatch):
 
     store = CompositeStore(SQLiteStore(tmp_path / "j.sqlite3"))
     monkeypatch.setattr(serverless, "build_runner", lambda settings, st: Runner())
+    monkeypatch.setattr(serverless, "run_intraday", lambda settings, st: {"intraday": "off"})
     code, body = serverless.handle("tick", settings=s, store=store)
-    assert code == 200 and body["did"] == "idle" and body["jobs"] == []
+    assert code == 200 and body["did"] == "idle" and body["jobs"] == [] and body["intraday"] == "off"
     control = store.get_control()
     assert control["daily_catalog"][0]["name"] == "core_mix" and "effective_settings" in control
 

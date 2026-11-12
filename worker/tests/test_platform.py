@@ -55,7 +55,7 @@ class TestOverrides:
 class TestStrategies:
     def test_catalog_and_params(self):
         names = {c["name"] for c in catalog()}
-        assert names == {"orb", "vwap_reversion", "ema_pullback"}
+        assert names == {"orb", "vwap_reversion", "ema_pullback", "momentum", "ai"}
         for c in catalog():
             for p in c["params"]:
                 assert p["min"] <= p["default"] <= p["max"]
@@ -66,7 +66,10 @@ class TestStrategies:
     @pytest.mark.parametrize("name", sorted(STRATEGIES))
     def test_strategies_produce_valid_signals_on_synthetic_data(self, name):
         data = synthetic_history(["X"], date(2026, 1, 5), 15, seed=3)["X"]
-        strat = build_strategy(name)
+        # Synthetic volume never surges, so the momentum generators are run without their volume test here.
+        strat = build_strategy(name, {"volume_mult": 0.5} if name == "momentum" else None)
+        if name == "ai":
+            strat.generators[-1].p.volume_mult = 0.5
         n = 0
         days = sorted({c.ts.date() for c in data})
         for d in days:

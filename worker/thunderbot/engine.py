@@ -70,6 +70,7 @@ class EngineState:
     login_wait_logged: bool = False
     consecutive_errors: int = 0
     feed_problem: str | None = None
+    index_bar: datetime | None = None
     # Symbols still to scan for the current bar. A symbol stays pending until its data source has
     # the just-closed candle (live APIs can lag the bar close by a few seconds).
     pending_scan: set[str] = field(default_factory=set)
@@ -235,6 +236,7 @@ class TradingEngine:
             # Keep "one signal per symbol per day" across a mid-day strategy switch.
             if hasattr(self.strategy, "_fired"):
                 self.strategy._fired = set(fired)
+            self._refresh_strategy()
         if self.filter_factory is not None and new.llm_enabled != old.llm_enabled:
             self.filter = self.filter_factory(new)
         elif hasattr(self.filter, "s"):
@@ -330,8 +332,29 @@ class TradingEngine:
             self.risk.roll_day(now)
             self.strategy.reset_day()
             self._prior_bars.clear()
+            self._refresh_strategy()
 
     # Entries
+
+    def _refresh_strategy(self) -> None:
+        """The AI strategy loads its trained model from the journal: at start, each new day, and after a switch."""
+        refresh = getattr(self.strategy, "refresh", None)
+        if refresh is not None:
+            refresh(self.store)
+
+    def _observe_index(self, now: datetime) -> None:
+        """Market context for the AI strategy: today's Nifty 50 bars (from Yahoo; context only, never traded)."""
+        observe = getattr(self.strategy, "observe_index", None)
+        if observe is None:
+            return
+        try:
+            from .ai import INDEX
+            from .ai.market import fetch_one, split_today
+
+            bars, _ = fetch_one(INDEX, self.s.interval_minutes, now - timedelta(days=3), now)
+            observe(split_today(bars, now)[0])
+        except Exception as e:
+            log.warning("index bars unavailable: %s", e)
 
     def _session_bars(self, symbol: str, now: datetime, bar_start: datetime):
         open_dt = self.clock.session_open(now.date())
@@ -351,6 +374,9 @@ class TradingEngine:
         return self._prior_bars[symbol]
 
     def _scan_for_entries(self, now: datetime, bar_start: datetime) -> None:
+        if self.state.index_bar != bar_start:
+            self.state.index_bar = bar_start
+            self._observe_index(now)
         for symbol in sorted(self.state.pending_scan):
             if symbol in self.positions or symbol not in self.s.symbols:
                 self.state.pending_scan.discard(symbol)

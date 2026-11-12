@@ -26,6 +26,10 @@ HARD_MAX_DAILY_LOSS_PCT = 10.0
 LATEST_FLATTEN = "15:15"  # Groww auto-squares MIS at 15:20
 
 LLM_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Liquid Nifty 50 names: tight spreads, and Yahoo serves 5-minute bars for all of them.
+AI_UNIVERSE = ("RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN", "AXISBANK", "KOTAKBANK", "LT", "ITC",
+               "BHARTIARTL", "BAJFINANCE", "MARUTI", "SUNPHARMA", "TATASTEEL", "NTPC", "ADANIENT", "ADANIPORTS",
+               "TITAN", "HCLTECH", "JSWSTEEL", "HINDALCO", "COALINDIA", "ONGC")
 DEFAULT_HOLIDAYS = Path(__file__).parent / "universes" / "nse_holidays.txt"  # used when TB_HOLIDAYS_FILE is unset
 
 # Keys the dashboard may change at runtime, with (type, min, max) bounds.
@@ -126,6 +130,13 @@ class Settings:
     llm_fail_mode: str = "reject"  # reject | pass, i.e. what to do when the LLM call fails
     llm_timeout_seconds: float = 60.0
     llm_min_confidence: float = 0.5
+    # An OpenAI-compatible endpoint for the AI desk's trader (xAI Grok, Groq, OpenAI, OpenRouter, ...).
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_chat_model: str | None = None
+
+    # AI desk (intraday, ML-scored setups decided by the LLM). Paper only on a serverless worker.
+    ai_symbols: list[str] = field(default_factory=lambda: list(AI_UNIVERSE))
 
     # Groww credentials and compliance
     groww_api_key: str | None = None
@@ -182,7 +193,12 @@ class Settings:
             price_protection_pct=_env_float("TB_PRICE_PROTECTION_PCT", cls.price_protection_pct),
             stop_limit_buffer_pct=_env_float("TB_STOP_LIMIT_BUFFER_PCT", cls.stop_limit_buffer_pct),
             fill_timeout_seconds=_env_float("TB_FILL_TIMEOUT_SECONDS", cls.fill_timeout_seconds),
-            llm_enabled=_env_bool("TB_LLM_ENABLED", cls.llm_enabled),
+            # With a chat endpoint configured the LLM is on unless TB_LLM_ENABLED says otherwise.
+            llm_enabled=_env_bool("TB_LLM_ENABLED", bool(_env("LLM_API_KEY") and _env("LLM_BASE_URL") and _env("LLM_MODEL"))),
+            llm_api_key=_env("LLM_API_KEY"),
+            llm_base_url=_env("LLM_BASE_URL"),
+            llm_chat_model=_env("LLM_MODEL"),
+            ai_symbols=_env_list("TB_AI_SYMBOLS", list(AI_UNIVERSE)),
             llm_model=_env("TB_LLM_MODEL", cls.llm_model) or cls.llm_model,
             llm_effort=_env("TB_LLM_EFFORT", cls.llm_effort) or cls.llm_effort,
             llm_fail_mode=(_env("TB_LLM_FAIL_MODE", cls.llm_fail_mode) or cls.llm_fail_mode).lower(),
@@ -241,7 +257,8 @@ class Settings:
         """
         from .strategy import STRATEGIES, coerce_params
 
-        new = dataclasses.replace(self, warnings=[], symbols=list(self.symbols), strategy_params=dict(self.strategy_params))
+        new = dataclasses.replace(self, warnings=[], symbols=list(self.symbols), strategy_params=dict(self.strategy_params),
+                                  ai_symbols=list(self.ai_symbols))
         rejected: dict[str, str] = {}
         for key, value in (overrides or {}).items():
             spec = OVERRIDABLE.get(key)
@@ -311,7 +328,10 @@ class Settings:
                 "liquid_symbol": self.liquid_symbol,
                 "slab_rate_pct": self.slab_rate_pct,
                 "notifications": bool((self.telegram_token and self.telegram_chat_id) or self.ntfy_topic),
-                "llm_model": self.llm_model,
+                "llm_model": self.llm_chat_model if self.chat_llm else self.llm_model,
+                "llm_provider": self.llm_provider,
+                "llm_configured": self.chat_llm or bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "ai_symbols": list(self.ai_symbols),
                 "orders_per_second": self.orders_per_second,
             },
             "hard_ceilings": {
@@ -324,6 +344,19 @@ class Settings:
             },
             "llm_efforts": list(LLM_EFFORTS),
         }
+
+    @property
+    def chat_llm(self) -> bool:
+        """True when an OpenAI-compatible endpoint is fully configured."""
+        return bool(self.llm_api_key and self.llm_base_url and self.llm_chat_model)
+
+    @property
+    def llm_provider(self) -> str:
+        if self.chat_llm:
+            from .llm.trader import provider_of
+
+            return provider_of(self.llm_base_url)
+        return "Anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "none"
 
     def clock(self) -> MarketClock:
         return MarketClock(

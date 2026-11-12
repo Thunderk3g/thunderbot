@@ -243,7 +243,23 @@ class JobRunner:
             return self.sweep(params, progress)
         if kind == "invest":
             return self.invest(params, progress)
+        if kind == "train":
+            return self.train(params, progress)
         raise JobError(f"unknown job kind {kind!r}")
+
+    def train(self, params: dict[str, Any], progress) -> dict[str, Any]:
+        """Retrain the AI desk's setup model on the last 60 days of 5-minute bars and make it the active one."""
+        from .ai.train import DEFAULT_MIN_STOP_PCT, TrainError, run_training
+
+        control = self.store.get_control()
+        s, _ = self.base.with_overrides(control.get("settings_overrides") or {})
+        ai_params = control.get("ai_params") or {}
+        symbols = [str(x).upper() for x in (params.get("symbols") or s.ai_symbols)][:60]
+        try:
+            return run_training(s, self.store, symbols, progress,
+                                min_stop_pct=float(ai_params.get("min_stop_pct", DEFAULT_MIN_STOP_PCT)))
+        except TrainError as e:
+            raise JobError(str(e)) from e
 
     def invest(self, params: dict[str, Any], progress) -> dict[str, Any]:
         """Daily-bar delivery strategy over many years, after Indian costs and capital-gains tax."""
