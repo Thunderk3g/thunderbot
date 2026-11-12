@@ -54,7 +54,7 @@ export async function post<T = unknown>(url: string, body: unknown): Promise<T> 
 /** Queue a research job, then wake the serverless worker to run it now. Where no such function exists
  *  (local `thunderbot serve`, a long-running worker) the wake-up fails quietly and the worker's own
  *  job loop picks the job up. */
-export async function startJob(kind: "backtest" | "sweep" | "invest", params: Record<string, unknown>): Promise<string> {
+export async function startJob(kind: "backtest" | "sweep" | "invest" | "train", params: Record<string, unknown>): Promise<string> {
   const { id } = await post<{ id: string }>("/api/jobs", { kind, params });
   void fetch(`/api/worker?op=job&id=${encodeURIComponent(id)}`, { method: "POST" }).catch(() => undefined);
   return id;

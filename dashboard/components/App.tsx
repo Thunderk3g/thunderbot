@@ -1,12 +1,13 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
-import { ChartLine, House, Layers, Moon, OctagonX, Play, ScrollText, Settings, Sun } from "lucide-react";
+import { BrainCircuit, ChartLine, House, Layers, Moon, OctagonX, Play, ScrollText, Settings, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ago } from "@/lib/format";
 import { workerAlive, type Control, type EventRow, type Heartbeat, type LiveState } from "@/lib/types";
 import { post, usePoll } from "@/lib/usePoll";
 import { Button, HoldButton, StatusDot, spring } from "./ui";
+import DeskView from "./DeskView";
 import LiveView from "./LiveView";
 import PerformanceView from "./PerformanceView";
 import LabView from "./LabView";
@@ -14,7 +15,8 @@ import SettingsView from "./SettingsView";
 import JournalView from "./JournalView";
 
 const PAGES = [
-  { id: "today", label: "Home", icon: House },
+  { id: "desk", label: "AI desk", icon: BrainCircuit },
+  { id: "today", label: "Investing", icon: House },
   { id: "lab", label: "Plans", icon: Layers },
   { id: "results", label: "Results", icon: ChartLine },
   { id: "log", label: "Activity", icon: ScrollText },
@@ -54,7 +56,7 @@ function workerState(control?: Control): { tone: Tone; title: string; detail: st
 }
 
 export default function App() {
-  const [page, setPage] = useState<PageId>("today");
+  const [page, setPage] = useState<PageId>("desk");
   const live = usePoll<LiveState>("/api/state", 2000);
   const control = live.data?.control;
   const state = workerState(control);
@@ -84,7 +86,7 @@ export default function App() {
   return (
     <div className="frame">
       <header className="topbar">
-        <button type="button" className="wordmark" onClick={() => go("today")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0, color: "inherit" }} aria-label="Thunderbot, go to Home">
+        <button type="button" className="wordmark" onClick={() => go("desk")} style={{ border: 0, background: "none", cursor: "pointer", padding: 0, color: "inherit" }} aria-label="Thunderbot, go to the AI desk">
           <Bolt />Thunderbot
         </button>
         <nav className="nav" aria-label="Pages">
@@ -96,11 +98,11 @@ export default function App() {
           ))}
         </nav>
         <div className="bar-end">
-          <div className="state" title={state.detail}>
+          <div className="state" title={state.detail} hidden={page === "desk"}>
             <StatusDot tone={state.tone} />
             <div><strong className={control?.heartbeat?.mode === "live" ? "loss" : ""}>{state.title}</strong><span className="soft">{state.detail}</span></div>
           </div>
-          {control?.heartbeat && tradeButton}
+          {control?.heartbeat && page !== "desk" && tradeButton}
           <ThemeToggle />
         </div>
       </header>
@@ -113,6 +115,7 @@ export default function App() {
         )}
         <AnimatePresence mode="wait">
           <motion.div key={page} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>
+            {page === "desk" && <DeskView state={live.data} refresh={live.refresh} />}
             {page === "today" && <LiveView state={live.data} act={act} refresh={live.refresh} go={go} />}
             {page === "results" && <PerformanceView defaultMode={control?.heartbeat?.mode ?? "paper"} />}
             {page === "lab" && <LabView control={control} onApplied={() => { live.refresh(); go("settings"); }} onUsed={() => { live.refresh(); go("today"); }} />}

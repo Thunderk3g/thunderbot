@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return guard(async () => {
     const control = (await getControl()) as Control;
+    delete (control as Record<string, unknown>).intraday_state;  // the AI desk's working state; the browser reads ai_desk
     const hb = control.heartbeat;
     // The session day follows the worker's clock, so replays of past dates read like a live session.
     const sessionDay = hb?.at ? hb.at.slice(0, 10) : istToday();

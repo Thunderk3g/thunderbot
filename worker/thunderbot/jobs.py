@@ -318,6 +318,10 @@ class JobRunner:
         sp = coerce_params(strategy, params.get("strategy_params"))
         progress(0.2)
         res = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(data)
+        if strategy == "ai":
+            # A model tested on the days it was trained on looks better than it is, so it is left out here.
+            note += (" The AI strategy is backtested without its model: every setup is taken. The model's own "
+                     "report, judged only on days it had not seen, is on the AI desk.")
         return {**_result_payload(res), "strategy": strategy, "strategy_params": sp, "data_note": note}
 
     def sweep(self, params: dict[str, Any], progress) -> dict[str, Any]:

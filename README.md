@@ -13,8 +13,11 @@ to keep alive.
   shown next to holding the Nifty ETF and next to holding the same ETFs with no timing.
 - **An LLM that checks, not predicts.** An optional Claude reviewer can postpone a rebalance when prices
   or orders look wrong. It can never create, change or enlarge a trade.
-- **Intraday strategies** (opening-range breakout, VWAP reversion, EMA pullback) remain for paper trading
-  and research. They lost money in our tests and are not recommended.
+- **An AI desk for intraday.** Four setup generators, a machine-learning model that scores every setup, and
+  an LLM (any OpenAI-compatible endpoint) that takes or skips it, all under fixed risk limits. It paper-trades
+  every five minutes from the same function and shows its reasoning for every decision. On its first run the
+  model found no edge and every setup type lost after costs; the desk exists to keep testing that with no
+  money at risk. See [`docs/ai-desk.md`](docs/ai-desk.md).
 
 > **No code can guarantee profit.** The research behind this build
 > ([`reports/ETF rotation and serverless hosting.md`](reports/ETF%20rotation%20and%20serverless%20hosting.md))
@@ -27,7 +30,8 @@ to keep alive.
 
 | Page | What it is for |
 |---|---|
-| **Home** | What the portfolio is worth and how it is split, when the bot checks next, what you hold, the latest orders as a list to copy into the Groww app, and whether the scheduler is calling in. A first visit shows three steps: wake the worker, choose a plan, start. **Start** and hold-to-stop are always in the top bar. |
+| **AI desk** | Intraday paper trading: today's P&L after costs, open positions, a tape of every setup with the model's score, the LLM's decision and reasoning, and what each skipped setup went on to do; the model's out-of-sample report; the desk's end-of-day notes; what is still missing before real money. |
+| **Investing** | What the portfolio is worth and how it is split, when the bot checks next, what you hold, the latest orders as a list to copy into the Groww app, and whether the scheduler is calling in. A first visit shows three steps: wake the worker, choose a plan, start. **Start** and hold-to-stop are always in the top bar. |
 | **Plans** | Choose a plan, test it on up to 17 years of real prices after Groww's charges and tax, then use it. Every result is shown next to holding the Nifty 50 ETF and next to holding the same ETFs with no timing. A second tab holds the intraday research tools (backtests and walk-forward sweeps). |
 | **Results** | The portfolio's gain or loss at each daily check, and for anything sold: net result after costs, by day and by holding. For intraday runs: win rate, profit factor, drawdown, and whether the reviewer's vetoes did worse than its approvals. |
 | **Activity** | Every check, order and warning, newest first, filterable. |
@@ -115,7 +119,7 @@ Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=t
 
 ```
 worker/      Python package: daily and intraday strategies, backtesters, paper and Groww brokers,
-             reviewers, the serverless entry point, local API, CLI. 147 tests.
+             reviewers, the serverless entry point, the AI desk, local API, CLI. 175 tests.
 dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
              api/worker.py is the Python function that runs the worker on Vercel
 supabase/    Postgres schema and the pg_cron / pg_net / Vault scheduler

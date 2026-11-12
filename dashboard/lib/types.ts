@@ -48,6 +48,7 @@ export type EffectiveSettings = {
   env_only: {
     live_trading_enabled: boolean; allow_mtf_api: boolean; require_login_confirmation: boolean;
     static_ip_configured: boolean; groww_configured: boolean; llm_model: string; orders_per_second: number; feed?: string;
+    llm_provider?: string; llm_configured?: boolean; ai_symbols?: string[];
     liquid_symbol?: string; slab_rate_pct?: number; notifications?: boolean;
   };
   hard_ceilings: Record<string, number | string>;
@@ -55,7 +56,54 @@ export type EffectiveSettings = {
   rejected: Record<string, string>;
 };
 
+// The AI desk (intraday, paper): what the worker publishes after each 5-minute bar.
+export type DeskDecision = {
+  id: string; t: string; symbol: string; side: Side; kind: string; entry: number; stop: number; target: number;
+  prob: number | null; expected_r: number | null; why: string; verdict: "take" | "skip" | ""; by: string; note: string;
+  flags: string[]; confidence?: number; size?: number; qty?: number; status?: string; fill?: number; exit?: string;
+  exit_price?: number; pnl?: number; r?: number; outcome?: "stop" | "target" | "eod"; error?: string;
+};
+export type DeskPosition = {
+  symbol: string; side: Side; qty: number; entry: number; stop: number; target: number; opened_at: string;
+  generator: string | null; ml_prob: number | null; ltp: number; unrealized: number;
+};
+export type DeskWatch = { symbol: string; ltp: number; chg_pct: number; vs_vwap_pct: number; rvol: number | null; m30_pct: number };
+export type DeskMarket = {
+  label?: string; breadth_up_pct?: number; above_vwap_pct?: number; stocks?: number; index_ret_open_pct?: number;
+  index_ret_30m_pct?: number; index_range_pct?: number; index_range_pos?: number; index_last?: number;
+};
+export type AIDesk = {
+  at: string; day: string; status: "running" | "off" | "paused" | "halted" | "closed" | "waiting" | "closing" | "no_prices";
+  enabled: boolean; mode: string; bar: string | null; market: DeskMarket; watch: DeskWatch[]; positions: DeskPosition[];
+  pending: { symbol: string; side: Side; qty: number; stop: number; target: number }[]; decisions: DeskDecision[];
+  stats: { realized: number; unrealized: number; trades: number; wins: number; losses: number; costs: number; halted: boolean; halt_reason: string; setups: number };
+  curve: [string, number][]; llm: { on: boolean; provider: string; model: string | null };
+  limits: { capital: number; risk_per_trade_pct: number; max_daily_loss_pct: number; max_open_positions: number; max_trades_per_day: number; entry_window: string; flatten_at: string };
+  params: { strict?: number; min_prob?: number; min_stop_pct?: number }; universe: number; feed_error: string | null;
+};
+export type GroupStats = { n: number; win_pct: number | null; avg_r: number | null; total_r: number; t: number | null; floor?: number };
+export type ModelSummary = {
+  id: string; trained_at: string; days: number; setups: number; symbols: number; min_stop_pct: number; verdict: string; verdict_text: string;
+  auc: number | null; best: GroupStats; all: GroupStats; policy: { learn: number; strict: number | null; ev: [number, number] };
+};
+export type ModelReport = {
+  trained_at: string; days: number; first_day: string; last_day: string; setups: number; symbols: number; min_stop_pct: number;
+  policy: { learn: number; strict: number | null; ev: [number, number] }; verdict: string; verdict_text: string;
+  importance: [string, number][]; note?: string;
+  oos: {
+    from: string; setups: number; auc: number | null; brier: number; brier_base: number; base_win_pct: number; all: GroupStats;
+    by_share: Record<string, GroupStats>; by_generator: Record<string, GroupStats>;
+    buckets: { p: number; win_pct: number; avg_r: number; n: number }[]; curve: [string, number, number][];
+  };
+};
+export type AIMemory = {
+  lessons?: { day: string; text: string }[];
+  last_review?: { day: string; summary: string; by: string; numbers: { net_pnl: number; trades: number; wins: number; setups: number; taken_avg_r: number | null; skipped_avg_r: number | null } };
+};
+export type AIDay = { day: string; net: number; trades: number; wins: number; costs: number; setups: number };
+
 export type Control = {
+  ai_desk?: AIDesk; ai_model?: ModelSummary | null; ai_memory?: AIMemory; ai_history?: AIDay[]; intraday_enabled?: boolean;
   kill_switch?: boolean; paused?: boolean; trading_enabled?: boolean; login_confirmed_for?: string; heartbeat?: Heartbeat;
   effective_settings?: EffectiveSettings; settings_overrides?: Record<string, unknown>; strategy_catalog?: StrategyInfo[];
   daily_catalog?: DailyStrategy[]; invest_settings?: { strategy: string; params: Record<string, number> };
@@ -122,6 +170,6 @@ export type InvestResult = {
   comparators?: { label: string; cagr_pct: number; cagr_after_exit_tax_pct: number | null; max_drawdown_pct: number; final_value: number; trades: number }[];
 };
 export type Job = {
-  id: string; created_at: string; kind: "backtest" | "sweep" | "invest"; params: Record<string, unknown>;
+  id: string; created_at: string; kind: "backtest" | "sweep" | "invest" | "train"; params: Record<string, unknown>;
   status: "queued" | "running" | "done" | "error"; progress: number; result?: BacktestResult | SweepResult | InvestResult | null; error?: string | null;
 };
