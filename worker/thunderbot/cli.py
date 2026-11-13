@@ -230,11 +230,18 @@ def _invest_runner(s: Settings, mode: str, store, scheduler: str = "worker"):
 
         quotes = ChartQuotes()
         status = quotes.status
+    from .broker.groww import holdings_reader
+    from .daily import CapitalGainsTax
+
     return InvestRunner(store, quotes, s.clock(), s.capital, mode=mode, broker=broker, strategy=s.invest_strategy,
                         run_at=parse_hhmm(s.invest_at), cutoff=parse_hhmm(s.invest_cutoff), feed_status=status,
                         liquid_symbol=s.liquid_symbol, reviewer=build_rebalance_reviewer(s),
                         notify=build_notifier(s.telegram_token, s.telegram_chat_id, s.ntfy_topic),
-                        scheduler=scheduler, tick_minutes=s.tick_minutes)
+                        scheduler=scheduler, tick_minutes=s.tick_minutes,
+                        holdings_source=holdings_reader(s.groww_api_key, s.groww_totp_secret, s.groww_api_secret,
+                                                        cache_path=s.data_path / "groww_token.json"),
+                        band_abs_pct=s.band_abs_pct, band_rel_pct=s.band_rel_pct, harvest_via=s.harvest_via,
+                        tax=CapitalGainsTax(slab_rate=s.slab_rate_pct / 100))
 
 
 def _run_invest(s: Settings, mode: str) -> int:
@@ -429,7 +436,26 @@ def cmd_control(args, s: Settings) -> int:
         store.event("trading_started", "trading started from CLI")
     elif args.command == "stop":
         store.set_control("trading_enabled", False)
-        store.event("trading_stopped", "trading stopped from CLI")
+        store.event("trading_stopped", "stopped from CLI: no new trades; investments stay, intraday positions are closed")
+    elif args.command == "sell-all":
+        from .invest import queue_command
+
+        store.set_control("trading_enabled", False)
+        queue_command(store, "sell_all")
+        store.event("sell_all", "sell-all requested from CLI")
+    elif args.command == "deposit":
+        from .invest import queue_command
+
+        if not args.amount > 0:
+            print("The amount must be more than zero.", file=sys.stderr)
+            return 2
+        queue_command(store, "deposit", amount=float(args.amount))
+        store.event("deposit", f"deposit of Rs {args.amount:,.0f} recorded from CLI")
+    elif args.command == "mode":
+        from .invest import MODE_KEY
+
+        store.set_control(MODE_KEY, args.mode)
+        store.event("invest_mode", f"orders are now {args.mode} (set from CLI)")
     elif args.command == "kill":
         store.set_control("kill_switch", True)
         store.event("kill_switch", "engaged from CLI")
@@ -552,12 +578,21 @@ def build_parser() -> argparse.ArgumentParser:
     lv.set_defaults(func=cmd_live)
 
     for name, help_ in (("start", "start trading (the paper/live worker waits for this)"),
-                        ("stop", "stop trading: close open positions and take no new trades"),
+                        ("stop", "no new trades: investments stay as they are; intraday positions are closed"),
+                        ("sell-all", "daily investing: sell every holding the plan manages (stop never does this)"),
                         ("kill", "engage kill switch: flatten and stop new entries"),
                         ("resume", "release kill switch and pause"),
                         ("pause", "stop new entries, keep managing open positions"),
                         ("confirm-login", "confirm today's broker login (daily 2FA policy)")):
         sub.add_parser(name, help=help_).set_defaults(func=cmd_control)
+    dp = sub.add_parser("deposit", help="daily investing: record new money; it buys what is furthest below target, selling nothing")
+    dp.add_argument("amount", type=float, help="rupees")
+    dp.set_defaults(func=cmd_control)
+    md = sub.add_parser("mode", help="daily investing: how orders are carried out")
+    md.add_argument("mode", choices=("paper", "guided", "auto"),
+                    help="paper: simulated. guided: listed for you to place by hand. auto: sent to the broker, "
+                         "and only by a worker started with `invest --live`")
+    md.set_defaults(func=cmd_control)
     sub.add_parser("check-ip", help="verify this host's public IP is the whitelisted static IP").set_defaults(func=cmd_check_ip)
     lc = sub.add_parser("login-check", help="read-only Groww credential check (login, profile, data plan); never trades")
     lc.add_argument("--fresh", action="store_true", help="ignore the cached token (uses 1 of 150 daily token requests)")

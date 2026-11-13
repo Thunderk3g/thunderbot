@@ -187,6 +187,37 @@ class TestEngine:
         assert len(llm) == 1 and llm[0]["approve"] is False and llm[0]["risk_flags"] == ["low_volume"]
         assert h.rows("orders") == []
 
+    def test_a_watching_role_is_journaled_but_not_obeyed(self, settings, tmp_path):
+        """A harness role that has not earned authority is asked and recorded; the engine trades as if it said take."""
+        class WatchingVeto:
+            enabled = True
+            role = "signal_reviewer"  # a harness role, which ships in the "shadow" stage
+
+            def review(self, ctx):
+                return LLMDecision(False, 0.0, 0.9, "volume looks thin", ["low_volume"], model="fake")
+
+        h = Harness(settings, tmp_path, signal_filter=WatchingVeto())
+        h.tick(9, 45, 101.5)
+        assert "AAA" in h.engine.positions  # the veto was not applied
+        llm = h.rows("llm_decisions")
+        assert len(llm) == 1 and llm[0]["approve"] is False and llm[0]["stage"] == "shadow" and llm[0]["role"] == "signal_reviewer"
+        assert h.rows("signals")[0]["harness_id"]
+
+    def test_a_role_with_authority_is_obeyed(self, settings, tmp_path):
+        from thunderbot import harness
+
+        class ActiveVeto:
+            enabled = True
+            role = "signal_reviewer"
+
+            def review(self, ctx):
+                return LLMDecision(False, 0.0, 0.9, "volume looks thin", ["low_volume"], model="fake")
+
+        h = Harness(settings, tmp_path, signal_filter=ActiveVeto())
+        h.store.set_control("role_stages", {"signal_reviewer": {"stage": "active", "harness_id": harness.current_id()}})
+        h.tick(9, 45, 101.5)
+        assert h.engine.positions == {} and h.rows("orders") == []
+
     def test_daily_loss_halt_flattens(self, settings, tmp_path):
         settings.max_daily_loss_pct = 1.0  # Rs 1,000
         h = Harness(settings, tmp_path)
@@ -276,6 +307,46 @@ class TestEngine:
         h.now = ts(9, 45) + timedelta(seconds=20)
         h.engine.tick()
         assert "AAA" in h.engine.positions and "AAA" not in h.engine.state.pending_scan
+
+
+class TestEngineRestart:
+    def test_a_restart_mid_session_keeps_the_position_and_the_days_loss_count(self, settings, tmp_path):
+        from thunderbot.engine import ENGINE_STATE_KEY
+
+        h = Harness(settings, tmp_path)
+        h.tick(9, 45, 101.5)  # the breakout: 400 shares at 101.5, stop 99.0
+        assert "AAA" in h.engine.positions
+        h.engine.risk.record_close(-1_500.0)  # an earlier losing trade today
+        h.tick(9, 46, 101.5)
+        saved = h.store.get_control()[ENGINE_STATE_KEY]
+        assert saved["risk"]["realized_pnl"] == -1_500.0 and saved["positions"][0]["symbol"] == "AAA"
+
+        # The process dies and starts again: a new engine, a new paper broker with nothing in it, the same journal.
+        h2 = Harness(settings, tmp_path)
+        h2.now = h.now
+        assert h2.engine.positions == {} and h2.engine.restore() is True
+        pos = h2.engine.positions["AAA"]
+        assert pos.qty == 400 and pos.entry_price == 101.5 and pos.stop == 99.0
+        assert h2.engine.risk.state.realized_pnl == -1_500.0 and h2.engine.risk.state.trades_opened == 1
+        assert pos.stop_order_id is None  # the paper broker's stop order died with the old process
+        assert any(e["kind"] == "engine_restored" for e in h2.rows("events"))
+
+        # The engine's own stop check still exits it, and the day's losses add up across the restart.
+        h2.tick(9, 50, 98.9)
+        assert "AAA" not in h2.engine.positions
+        trade = next(t for t in h2.rows("trades") if t["exit_reason"] == "stop_soft")
+        assert trade["net_pnl"] == pytest.approx((98.9 - 101.5) * 400)
+        assert h2.engine.risk.state.realized_pnl == pytest.approx(-1_500.0 - 1_040.0)
+        h2.tick(9, 55, 98.9)
+        assert h2.engine.risk.state.halted  # 2,540 lost against a 2,000 limit: no more trades today
+        assert len(h2.rows("signals")) == 1  # the breakout is not taken a second time
+
+    def test_yesterdays_state_is_not_restored(self, settings, tmp_path):
+        h = Harness(settings, tmp_path)
+        h.tick(9, 45, 101.5)
+        h2 = Harness(settings, tmp_path)
+        h2.now = h.now + timedelta(days=1)
+        assert h2.engine.restore() is False and h2.engine.positions == {}
 
 
 def test_round_tick():

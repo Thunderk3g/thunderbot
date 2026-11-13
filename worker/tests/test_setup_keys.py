@@ -75,7 +75,7 @@ def fake_groww_key(role: str) -> str:
 
 def test_round_trip_and_wrong_key():
     blob = vault.encrypt({"api_key": "k", "n": 1}, MASTER)
-    assert blob.startswith("v1:") and "k" not in blob[3:10]
+    assert blob.startswith("v1:") and "api_key" not in blob  # the plaintext is nowhere in what is stored
     assert vault.decrypt(blob, MASTER) == {"api_key": "k", "n": 1}
     assert vault.encrypt({"api_key": "k"}, MASTER) != vault.encrypt({"api_key": "k"}, MASTER)  # a fresh IV each time
     with pytest.raises(vault.SecretError, match="wrong key"):

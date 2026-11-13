@@ -154,6 +154,11 @@ class Settings:
     invest_cutoff: str = "15:25"  # a live run that starts after this does not trade; it tries again next session
     liquid_symbol: str = "LIQUIDCASE"  # the growth-type liquid ETF that idle money is parked in
     slab_rate_pct: float = 30.0  # your marginal income-tax rate, for liquid and short-term gold ETF gains
+    # Drift corridor: a holding is out when it is this many points from its target, or this share of its
+    # own target away, whichever comes first. Shown on the dashboard; used by the plan's band option.
+    band_abs_pct: float = 5.0
+    band_rel_pct: float = 20.0
+    harvest_via: str = "t_plus_1"  # how a tax harvest buys back: t_plus_1 (next session) | twin (a twin fund, same day)
     tick_minutes: float = 15.0  # the longest gap between scheduler calls in market hours (Vercel's free tier)
     cron_secret: str | None = None  # shared secret the schedulers send to the serverless worker
     telegram_token: str | None = field(default=None, repr=False)
@@ -229,6 +234,9 @@ class Settings:
             invest_cutoff=_env("TB_INVEST_CUTOFF", cls.invest_cutoff) or cls.invest_cutoff,
             liquid_symbol=(_env("TB_LIQUID_SYMBOL", cls.liquid_symbol) or cls.liquid_symbol).strip().upper(),
             slab_rate_pct=_env_float("TB_SLAB_RATE_PCT", cls.slab_rate_pct),
+            band_abs_pct=min(max(_env_float("TB_BAND_ABS_PCT", cls.band_abs_pct), 0.5), 25.0),
+            band_rel_pct=min(max(_env_float("TB_BAND_REL_PCT", cls.band_rel_pct), 1.0), 100.0),
+            harvest_via=(_env("TB_HARVEST_VIA", cls.harvest_via) or cls.harvest_via).strip().lower(),
             tick_minutes=_env_float("TB_TICK_MINUTES", cls.tick_minutes),
             cron_secret=_env("CRON_SECRET"),
             telegram_token=_env("TB_TELEGRAM_TOKEN"),
@@ -342,6 +350,9 @@ class Settings:
                 "feed": self.feed,
                 "liquid_symbol": self.liquid_symbol,
                 "slab_rate_pct": self.slab_rate_pct,
+                "band_abs_pct": self.band_abs_pct,
+                "band_rel_pct": self.band_rel_pct,
+                "harvest_via": self.harvest_via,
                 "notifications": bool((self.telegram_token and self.telegram_chat_id) or self.ntfy_topic),
                 "llm_model": self.llm_chat_model if self.chat_llm else self.llm_model,
                 "llm_provider": self.llm_provider,

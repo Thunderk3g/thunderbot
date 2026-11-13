@@ -102,6 +102,13 @@ In the dashboard, test strategies in the **Lab**, press **Use this strategy** on
 - **Bad prices stop a rebalance.** A missing price, a history that ends more than a week ago, or a price
   more than 15% from the last close postpones the trade to the next session and logs the reason. An ETF
   unit split that the data feed has not adjusted looks exactly like that.
+- **Deposits buy, they never sell.** New money you record is spent at the next daily check on whatever is
+  furthest below its target. On most days that is the only trade there is.
+- **Stopping keeps your holdings.** Stop means no new trades. Selling everything is a separate command.
+- **Orders to place by hand.** In `guided` mode (and whenever automatic orders are asked for here, since this
+  function cannot place any) the day's orders are published as a basket with limit prices. Mark it placed
+  when you have entered them in the Groww app; type in what you hold so the plan works on your real
+  portfolio. Reading holdings from Groww needs the Groww SDK, which this function does not carry.
 - **Backtests** run in the same function when you press Test in the Lab. A 15-year test takes a few seconds.
 - **The watchdog** is a separate Supabase job. At 15:05 and 15:20 IST it checks the heartbeat and, if you
   stored an ntfy topic, alerts your phone when the worker has been silent for 20 minutes.
@@ -131,9 +138,9 @@ client only. That rules out this setup for live orders: Vercel's functions have 
 static IPs (about $100 a month on top of Pro) are shared between customers, and Supabase offers no fixed
 outbound address at all.
 
-What stays possible here: signals, paper trading, backtests, alerts, and reading the orders off the Today
-page to place them yourself in the Groww app. For the two recommended strategies that is a handful of
-orders a year.
+What stays possible here: signals, paper trading, backtests, alerts, and `guided` mode, where the worker
+works out each basket of orders on your real holdings and you place them yourself in the Groww app. For the
+recommended plans that is a handful of orders a year, plus one or two whenever you add money.
 
 To place live orders automatically you need one machine with an address of your own:
 

@@ -54,17 +54,20 @@ def test_waits_for_start_then_buys_etf_before_close(tmp_path):
     assert len(store.local.rows("orders")) == 1
 
 
-def test_downtrend_goes_to_cash_and_stop_sells_everything(tmp_path):
+def test_stop_keeps_the_holdings_and_sells_nothing(tmp_path):
     store, r, clock = make(tmp_path, datetime(2026, 10, 21, 15, 12, tzinfo=IST))
     store.set_control("trading_enabled", True)
     r.tick()
-    assert store.get_control()[STATE_KEY]["lots"]
+    held = store.get_control()[STATE_KEY]["lots"][BENCHMARK]["qty"]
     store.set_control("trading_enabled", False)
     clock[0] = datetime(2026, 10, 22, 10, 0, tzinfo=IST)
-    r.tick()
+    assert r.tick()["did"] == "stopped (holdings kept)"
     st = store.get_control()[STATE_KEY]
-    assert st["lots"] == {} and st["cash"] > 99_000
-    assert store.local.rows("trades")[0]["exit_reason"] == "stopped"
+    assert st["lots"][BENCHMARK]["qty"] == held and store.local.rows("trades") == []
+    store.set_control("kill_switch", True)  # the kill switch is the same: no new trades, nothing sold
+    clock[0] = datetime(2026, 10, 22, 15, 12, tzinfo=IST)
+    assert r.tick()["did"] == "stopped (holdings kept)"
+    assert store.get_control()[STATE_KEY]["lots"][BENCHMARK]["qty"] == held and len(store.local.rows("orders")) == 1
 
 
 def test_below_average_stays_in_cash(tmp_path):

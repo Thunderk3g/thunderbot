@@ -352,6 +352,10 @@ class GrowwBroker:
             )
         return out
 
+    def holdings(self) -> list[dict[str, Any]]:
+        """What the demat account holds, read-only: ``[{"symbol", "qty", "avg_price"}]``."""
+        return read_holdings(self.client)
+
     def ltp(self, symbols: list[str]) -> dict[str, float]:
         if not symbols:
             return {}
@@ -381,6 +385,48 @@ class GrowwBroker:
         if v is None:
             v = _first(m, "clear_cash")
         return float(v) if v is not None else None
+
+
+def read_holdings(client: Any) -> list[dict[str, Any]]:
+    """Delivery holdings from ``get_holdings_for_user``. It reads; it cannot place or change anything.
+
+    Field names follow Groww's REST docs (``trading_symbol``, ``quantity``, ``average_price``); common
+    variants are accepted. Rows with no quantity are dropped. Not yet checked against a live account.
+    """
+    try:
+        resp = client.get_holdings_for_user()
+    except Exception as e:
+        raise BrokerError(f"get_holdings_for_user failed: {e}") from e
+    rows = (resp or {}).get("holdings", resp if isinstance(resp, list) else []) or []
+    out = []
+    for h in rows:
+        if not isinstance(h, dict):
+            continue
+        symbol = str(_first(h, "trading_symbol", "symbol", default="") or "").strip().upper()
+        qty = float(_first(h, "quantity", "net_quantity", "total_quantity", default=0) or 0)
+        if not symbol or qty <= 0:
+            continue
+        out.append({"symbol": symbol, "qty": int(qty) if qty == int(qty) else qty,
+                    "avg_price": float(_first(h, "average_price", "avg_price", "net_price", default=0.0) or 0.0)})
+    return out
+
+
+def holdings_reader(api_key: str | None, totp_secret: str | None = None, api_secret: str | None = None,
+                    cache_path: Path | None = None) -> Callable[[], list[dict[str, Any]]] | None:
+    """A function that reads the demat holdings, or None when no Groww login is configured. It logs in
+    only when called, and it can only read."""
+    if not api_key or not (totp_secret or api_secret):
+        return None
+
+    def read() -> list[dict[str, Any]]:
+        try:
+            from growwapi import GrowwAPI
+        except ImportError as e:
+            raise BrokerError("the Groww SDK is not installed where this worker runs") from e
+        token, _ = GrowwSession(api_key, totp_secret, api_secret, cache_path=cache_path).token()
+        return read_holdings(GrowwAPI(token))
+
+    return read
 
 
 def last_login(cache_path: Path) -> datetime | None:

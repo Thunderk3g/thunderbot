@@ -25,6 +25,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from .costs import GROWW
+
 # Prices: {symbol: {date: adjusted close}} on a shared trading calendar.
 Prices = dict[str, dict[date, float]]
 
@@ -101,20 +103,20 @@ class DeliveryCosts:
     tick (0.01%) for a liquid ETF priced near Rs 100. Sources: research_notes (etf_tax_and_charges.md).
     """
 
-    exchange_pct: float = 0.0000307
-    sebi_pct: float = 0.000001
-    stamp_buy_pct: float = 0.00015
-    gst_pct: float = 0.18
-    dp_per_sell: float = 23.60
-    stock_stt_pct: float = 0.001
-    etf_sell_stt_pct: float = 0.00001
+    # Rates come from the one schedule in costs.py, which the intraday cost model reads too.
+    exchange_pct: float = GROWW.exchange_txn
+    sebi_pct: float = GROWW.sebi_fee
+    stamp_buy_pct: float = GROWW.stamp_delivery_buy
+    gst_pct: float = GROWW.gst
+    dp_per_sell: float = GROWW.dp_charge_per_sell
+    stock_stt_pct: float = GROWW.stt_delivery
+    etf_sell_stt_pct: float = GROWW.stt_equity_etf_sell
     slippage_pct: float = 0.0005  # per side
     liquid_slippage_pct: float = 0.0001
 
     @staticmethod
     def brokerage(value: float) -> float:
-        b = min(20.0, 0.001 * value)
-        return b if b >= 5.0 else min(5.0, 0.025 * value)
+        return GROWW.brokerage(value)
 
     def order(self, value: float, buy: bool, symbol: str = "") -> float:
         if value <= 0:
@@ -323,6 +325,96 @@ def momentum_scores(history: dict[str, list[float]], lookbacks: tuple[int, ...] 
     return scores
 
 
+# Drift corridors and cash routing: plain arithmetic shared by the backtester and the live runner.
+
+BAND_ABS_PCT = 5.0  # a holding is out of its corridor when it is this many points from target ...
+BAND_REL_PCT = 20.0  # ... or this share of its own target away, whichever comes first
+
+
+def corridor(target: float, abs_pct: float = BAND_ABS_PCT, rel_pct: float = BAND_REL_PCT) -> tuple[float, float]:
+    """The (low, high) weights a holding may sit between, as fractions. ``target`` is a fraction too.
+    A 33% holding may drift to 28.3-38.3% (the 5-point rule binds); a 10% one to 8-12% (the 20% rule)."""
+    half = min(abs_pct / 100.0, rel_pct / 100.0 * target)
+    return max(target - half, 0.0), min(target + half, 1.0)
+
+
+def out_of_band(current: dict[str, float], target: dict[str, float], abs_pct: float = BAND_ABS_PCT,
+                rel_pct: float = BAND_REL_PCT) -> list[str]:
+    """Target holdings whose weight has reached the edge of their corridor."""
+    out = []
+    for s, t in target.items():
+        lo, hi = corridor(t, abs_pct, rel_pct)
+        w = current.get(s, 0.0)
+        if w <= lo + 1e-9 or w >= hi - 1e-9:
+            out.append(s)
+    return out
+
+
+def shortfalls(values: dict[str, float], target: dict[str, float], total: float) -> dict[str, float]:
+    """Rupees each target holding is below its share of ``total`` (negative when above)."""
+    return {s: t * total - values.get(s, 0.0) for s, t in target.items()}
+
+
+def route_cash(cash: float, values: dict[str, float], target: dict[str, float], prices: dict[str, float], total: float,
+               min_order: float = 500.0, buffer: float = 0.004) -> list[tuple[str, int]]:
+    """Spend ``cash`` on whole shares with no sells: the holding furthest below target first, then the
+    next, until the cash is used or nothing is a whole share short. ``total`` is the portfolio's value
+    including the cash. Returns (symbol, quantity) buys in the order to place them."""
+    usable = cash / (1 + buffer)
+    values = dict(values)
+    orders: dict[str, int] = {}
+    while True:
+        short = shortfalls(values, target, total)
+        pick = None
+        for s in sorted(short, key=short.get, reverse=True):
+            px = prices.get(s)
+            if not px:
+                continue
+            qty = math.floor(min(short[s], usable) / px)
+            if qty >= 1 and (qty * px >= min_order or s in orders):
+                pick = (s, qty, px)
+                break
+        if pick is None:
+            break
+        s, qty, px = pick
+        orders[s] = orders.get(s, 0) + qty
+        values[s] = values.get(s, 0.0) + qty * px
+        usable -= qty * px
+    return list(orders.items())
+
+
+# Tax-gain harvesting. Selling and rebuying the same ticker on one day is netted by the broker as an
+# intraday trade and realises nothing, so a harvest either rebuys on the next session or swaps into a
+# twin: another fund on the same index. Edit this map to suit what your broker lists. (Not verified
+# against primary tax sources: confirm with a chartered accountant before acting on a harvest.)
+HARVEST_TWINS: dict[str, str] = {
+    "NIFTYBEES": "SETFNIF50", "SETFNIF50": "NIFTYBEES",
+    "JUNIORBEES": "NEXT50IETF", "NEXT50IETF": "JUNIORBEES",
+}
+
+
+def xirr(flows: list[tuple[date, float]]) -> float | None:
+    """Money-weighted yearly return, in %, of dated cash flows (money in is negative). None when the
+    flows never change sign or no rate between -99% and +1000% balances them."""
+    if not flows or not (any(v < 0 for _, v in flows) and any(v > 0 for _, v in flows)):
+        return None
+    d0 = min(d for d, _ in flows)
+
+    def npv(rate: float) -> float:
+        return sum(v / (1 + rate) ** ((d - d0).days / 365.25) for d, v in flows)
+
+    lo, hi = -0.99, 10.0
+    if npv(lo) * npv(hi) > 0:
+        return None
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if npv(lo) * npv(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return round((lo + hi) / 2 * 100, 2)
+
+
 # Strategies: each returns target weights for the next session, given history up to today.
 
 RebalanceRule = Callable[[date, date | None], bool]
@@ -471,6 +563,14 @@ class StaticMix:
     rebalance: str = "monthly"  # looked at every month-end, traded only in ``month``
     month: int = 3  # rebalance at the end of March, the last month of the tax year
     name: str = "static_mix"
+    # ``band``: ignore the calendar and rebalance only when a holding has left its drift corridor.
+    band: bool = False
+    band_abs_pct: float = BAND_ABS_PCT
+    band_rel_pct: float = BAND_REL_PCT
+    # Backtest only: add this much on the first session of every month, bought into whatever is furthest
+    # below target. With ``deposits_only`` the plan never sells, so new money does all the rebalancing.
+    monthly_deposit: float = 0.0
+    deposits_only: bool = False
 
     def universe(self) -> list[str]:
         return [INDEX, *self.weights]
@@ -479,11 +579,16 @@ class StaticMix:
         ready = {s: w for s, w in self.weights.items() if hist.get(s)}
         if not ready:
             return None
+        total = sum(ready.values())
+        want = {s: w / total for s, w in ready.items()}
         held = {s for s, w in current.items() if w > 0.005}
+        if self.band:
+            if held == set(ready) and not out_of_band(current, want, self.band_abs_pct, self.band_rel_pct):
+                return KEEP
+            return want
         if held and d.month != self.month and held == set(ready):
             return KEEP
-        total = sum(ready.values())
-        return {s: w / total for s, w in ready.items()}
+        return want
 
 
 @dataclass
@@ -553,16 +658,26 @@ class DailyResult:
     exit_tax: float = 0.0  # tax still owed on unrealized gains if everything were sold on the last day
     benchmark_exit_tax: float = 0.0
     weights: list[tuple[date, dict[str, float]]] = field(default_factory=list)  # after each rebalance
+    # With monthly deposits, ``equity`` and ``benchmark`` are time-weighted indices (what one rupee held
+    # throughout became, scaled to the starting capital), so CAGR and drawdown stay comparable. What the
+    # account actually held, and its money-weighted return, are in ``deposits``.
+    deposits: dict[str, Any] | None = None
 
     def metrics(self) -> dict[str, Any]:
         m = {**_stats(self.equity), "trades": self.trades, "costs": round(self.costs, 2),
              "taxes": round(self.taxes, 2), "turnover_per_year": round(self.turnover, 2),
              "time_invested_pct": round(self.exposure * 100, 1), "rebalances": self.rebalances,
              "benchmark": _stats(self.benchmark)}
+        # Exit tax is in rupees of the real account; scale it to the index when deposits were made.
+        dep = self.deposits or {}
+        scale = self.equity[-1][1] / dep["final_value"] if dep.get("final_value") else 1.0
+        bscale = self.benchmark[-1][1] / dep["benchmark_final_value"] if dep.get("benchmark_final_value") else 1.0
         m["exit_tax"] = round(self.exit_tax, 2)
-        m["cagr_after_exit_tax_pct"] = _cagr_after(self.equity, self.exit_tax)
+        m["cagr_after_exit_tax_pct"] = _cagr_after(self.equity, self.exit_tax * scale)
         m["benchmark"]["exit_tax"] = round(self.benchmark_exit_tax, 2)
-        m["benchmark"]["cagr_after_exit_tax_pct"] = _cagr_after(self.benchmark, self.benchmark_exit_tax)
+        m["benchmark"]["cagr_after_exit_tax_pct"] = _cagr_after(self.benchmark, self.benchmark_exit_tax * bscale)
+        if self.deposits:
+            m["deposits"] = self.deposits
         return m
 
     def yearly(self) -> list[dict[str, Any]]:
@@ -617,15 +732,23 @@ def _stats(series: list[tuple[date, float]]) -> dict[str, Any]:
 
 def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: float = 500_000.0,
              costs: DeliveryCosts | None = None, tax: CapitalGainsTax | None = None,
-             cash_yield_pct: float = 0.0, min_trade: float = 1_000.0, trade_lag: int = 1) -> DailyResult:
+             cash_yield_pct: float = 0.0, min_trade: float = 1_000.0, trade_lag: int = 1,
+             monthly_deposit: float | None = None, deposits_only: bool | None = None) -> DailyResult:
     """Simulate the strategy day by day.
 
     Decisions use closes up to day t and fill at the close ``trade_lag`` sessions later (1 by default,
     so there is no look-ahead; 0 approximates deciding and trading in the last minutes of day t).
     Shares are sold first-in first-out, as Indian demat accounts are taxed. Tax for a financial year is
     paid on the first session of the next one, by selling the cash asset first if cash is short.
+
+    ``monthly_deposit`` adds that many rupees on the first session of each later month and buys whatever
+    is furthest below its target with it, selling nothing. The benchmark receives the same deposits.
+    ``deposits_only`` stops the plan from ever selling to rebalance, so the deposits do all of it. Both
+    default to the strategy's own ``monthly_deposit`` / ``deposits_only`` attributes when it has them.
     """
     costs = costs or DeliveryCosts()
+    monthly_deposit = float(getattr(strategy, "monthly_deposit", 0.0) if monthly_deposit is None else monthly_deposit)
+    deposits_only = bool(getattr(strategy, "deposits_only", False) if deposits_only is None else deposits_only)
     days = [d for d in calendar(prices, INDEX if INDEX in prices else BENCHMARK)]
     hist: dict[str, list[float]] = {s: [] for s in prices}
     last_px: dict[str, float] = {}
@@ -646,6 +769,11 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
     bench_units = None
     bench_cost = capital
     started = decided = False
+    # Deposits: units of a time-weighted index for the account and for the benchmark, and the dated flows.
+    units = bench_idx_units = capital
+    flows: list[tuple[date, float]] = []
+    last_target: dict[str, float] = {}
+    contributed = capital
 
     def held(s: str) -> float:
         return sum(lot.qty for lot in lots.get(s, []))
@@ -691,19 +819,47 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
         trades += 1
 
     def execute(pending: dict[str, float], d: date) -> None:
+        nonlocal last_target
+        last_target = dict(pending)
         total = value()
         want = {s: w * total for s, w in pending.items() if s in last_px}
-        for s in list(lots):  # sells first, to free cash
-            target_val = want.get(s, 0.0)
-            cur_val = held(s) * last_px[s]
-            if cur_val - target_val > min_trade or (target_val == 0 and cur_val > 0):
-                sell(s, cur_val - target_val, d)
-        for s, target_val in want.items():  # then buys
+        if not deposits_only:
+            for s in list(lots):  # sells first, to free cash
+                target_val = want.get(s, 0.0)
+                cur_val = held(s) * last_px[s]
+                if cur_val - target_val > min_trade or (target_val == 0 and cur_val > 0):
+                    sell(s, cur_val - target_val, d)
+        # Buys, the holding furthest below target first, so a no-sell plan spends its cash where it counts.
+        for s, target_val in sorted(want.items(), key=lambda kv: kv[1] - held(kv[0]) * last_px[kv[0]], reverse=True):
             buy_val = min(target_val - held(s) * last_px[s], cash / (1 + 0.004))
             if buy_val > min_trade:
                 buy(s, buy_val, d)
         v = value()
         weights_log.append((d, {s: round(held(s) * last_px[s] / v, 4) for s in lots} if v else {}))
+
+    def deposit(d: date) -> None:
+        """Add the month's money and buy what is furthest below target with it. Nothing is sold."""
+        nonlocal cash, units, bench_units, bench_cost, bench_idx_units, contributed
+        v = value()
+        units += monthly_deposit / (v / units) if v > 0 else monthly_deposit
+        cash += monthly_deposit
+        contributed += monthly_deposit
+        flows.append((d, -monthly_deposit))
+        if bench_units and BENCHMARK in last_px:
+            bench_val = bench_units * last_px[BENCHMARK]
+            bench_idx_units += monthly_deposit / (bench_val / bench_idx_units)
+            c = costs.order(monthly_deposit, buy=True, symbol=BENCHMARK)
+            bench_units += (monthly_deposit - c) / last_px[BENCHMARK]
+            bench_cost += monthly_deposit - c
+        target = {s: w for s, w in last_target.items() if s in last_px}
+        if not target:
+            return  # nothing decided yet: the first decision spends it
+        total = value()
+        short = shortfalls({s: held(s) * last_px[s] for s in target}, target, total)
+        for s in sorted(short, key=short.get, reverse=True):
+            buy_val = min(short[s], cash / (1 + 0.004))
+            if buy_val > min(min_trade, 500.0):
+                buy(s, buy_val, d)
 
     def settle_tax(fy: int, d: date) -> None:
         nonlocal cash, total_tax
@@ -747,9 +903,12 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
             continue
         if not started:
             started = True
+            flows.append((d, -capital))
             if BENCHMARK in last_px:
                 bench_cost = capital - costs.order(capital, buy=True, symbol=BENCHMARK)
                 bench_units = bench_cost / last_px[BENCHMARK]
+        elif monthly_deposit > 0 and i > 0 and d.month != days[i - 1].month:
+            deposit(d)
         # Pay last financial year's tax at the first trading day of a new one.
         if tax and i > 0 and financial_year(d) != financial_year(days[i - 1]):
             settle_tax(financial_year(days[i - 1]), d)
@@ -759,8 +918,8 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
         while queue and queue[0][0] <= i:
             execute(queue.pop(0)[1], d)
         v = value()
-        equity.append((d, v))
-        bench.append((d, bench_units * last_px[BENCHMARK] if bench_units else capital))
+        equity.append((d, v * (capital / units)))  # capital / units is exactly 1 until a deposit is made
+        bench.append((d, bench_units * last_px[BENCHMARK] * (capital / bench_idx_units) if bench_units else capital))
         if any(asset_class(s) != "debt_etf" for s in lots):
             invested_days += 1
         nxt = days[i + 1] if i + 1 < len(days) else None
@@ -773,7 +932,7 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
                 rebalances += 1
                 if trade_lag <= 0:
                     execute(tgt, d)
-                    equity[-1] = (d, value())
+                    equity[-1] = (d, value() * (capital / units))
                 else:
                     queue.append((i + trade_lag, tgt))
     exit_tax = bench_exit_tax = 0.0
@@ -782,15 +941,27 @@ def backtest(strategy: Any, prices: Prices, start: date, end: date, capital: flo
         exit_tax = unrealized_tax(last_day)
         # Tax on gains realized in the final, unfinished year.
         settle_tax(financial_year(last_day), last_day)
-        equity[-1] = (last_day, value())
+        equity[-1] = (last_day, value() * (capital / units))
         if bench_units:
             bench_exit_tax = CapitalGainsTax(**{k: getattr(tax, k) for k in tax.__dataclass_fields__}).year_tax(
-                0.0, bench[-1][1] - bench_cost)
+                0.0, bench_units * last_px[BENCHMARK] - bench_cost)
     years = max((equity[-1][0] - equity[0][0]).days / 365.25, 1e-9) if equity else 1
     avg_val = sum(v for _, v in equity) / len(equity) if equity else capital
+    deposits = None
+    if monthly_deposit > 0 and equity:
+        last_day, final = equity[-1][0], value()
+        bench_final = bench_units * last_px[BENCHMARK] if bench_units else None
+        deposits = {
+            "monthly": monthly_deposit, "no_sells": deposits_only, "contributed": round(contributed, 2),
+            "final_value": round(final, 2), "xirr_pct": xirr([*flows, (last_day, final)]),
+            "xirr_after_exit_tax_pct": xirr([*flows, (last_day, final - exit_tax)]),
+            "benchmark_final_value": round(bench_final, 2) if bench_final else None,
+            "benchmark_xirr_pct": xirr([*flows, (last_day, bench_final)]) if bench_final else None,
+            "benchmark_xirr_after_exit_tax_pct": xirr([*flows, (last_day, bench_final - bench_exit_tax)]) if bench_final else None,
+        }
     return DailyResult(strategy.name, start, end, equity, bench, trades, total_costs, total_tax,
                        traded / avg_val / years / 2, invested_days / max(len(equity), 1), rebalances,
-                       exit_tax=exit_tax, benchmark_exit_tax=bench_exit_tax, weights=weights_log)
+                       exit_tax=exit_tax, benchmark_exit_tax=bench_exit_tax, weights=weights_log, deposits=deposits)
 
 
 UNIVERSE_DIR = Path(__file__).parent / "universes"
@@ -811,6 +982,9 @@ DAILY_CATALOG = [
      "params": [
          {"name": "gold_pct", "label": "Gold share %", "type": "int", "min": 0, "max": 50, "step": 1, "default": 33},
          {"name": "next50_pct", "label": "Next 50 share of the equity part %", "type": "int", "min": 0, "max": 100, "step": 10, "default": 50},
+         {"name": "band", "label": "Rebalance only when a share leaves its band, not every March (1 = yes)", **_ON_OFF, "default": 0},
+         {"name": "monthly_deposit", "label": "Test only: add this much every month, Rs", "type": "int", "min": 0, "max": 1_000_000, "step": 1_000, "default": 0},
+         {"name": "no_sells", "label": "Never sell to rebalance; let new money do it (1 = yes)", **_ON_OFF, "default": 0},
      ]},
     {"name": "etf_trend", "label": "Trend rotation (ETFs or liquid fund)",
      "description": "Splits the money equally between the ETFs and holds each one only while its price is above its "
@@ -876,7 +1050,8 @@ def build_daily(name: str, params: dict[str, Any] | None = None, symbols: list[s
     if name == "core_mix":
         equity = 1 - p["gold_pct"] / 100
         weights = {N50: equity * (1 - p["next50_pct"] / 100), NEXT50: equity * p["next50_pct"] / 100, GOLD: p["gold_pct"] / 100}
-        return StaticMix({s: w for s, w in weights.items() if w > 0}, name="core_mix")
+        return StaticMix({s: w for s, w in weights.items() if w > 0}, name="core_mix", band=bool(p["band"]),
+                         monthly_deposit=float(p["monthly_deposit"]), deposits_only=bool(p["no_sells"]))
     if name in ("etf_trend", "etf_rank"):
         assets = [N50, NEXT50, *([MIDCAP] if p["midcap"] else []), *([GOLD] if p["gold"] else [])]
         if name == "etf_trend":

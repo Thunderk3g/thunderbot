@@ -48,6 +48,7 @@ from .strategy.base import Strategy
 log = logging.getLogger(__name__)
 
 TICK = 0.05  # multiples of 0.05 are valid on every NSE equity tick-size band
+ENGINE_STATE_KEY = "engine_state"  # open positions and the day's risk state, so a restart forgets neither
 SCAN_RETRY_SECONDS = 90  # how long after a bar closes to keep waiting for its candle
 
 
@@ -135,6 +136,7 @@ class TradingEngine:
         self._shadows: dict[str, dict] = {}
         self.equity_interval = timedelta(seconds=equity_interval_seconds)
         self._last_equity_at: datetime | None = None
+        self._persisted: dict | None = None
 
     def publish_static(self) -> None:
         self.store.set_control("strategy_catalog", catalog())
@@ -145,6 +147,7 @@ class TradingEngine:
     def run_forever(self) -> None:
         self.store.event("engine_start", f"engine started in {self.mode} mode", symbols=self.s.symbols)
         self.publish_static()
+        self.restore()
         self.reconcile()
         while True:
             try:
@@ -184,7 +187,83 @@ class TradingEngine:
         try:
             self._tick(now, control)
         finally:
+            self._persist(now)
             self._publish_heartbeat(now, control)
+
+    # Surviving a restart
+
+    def _snapshot(self, now: datetime) -> dict[str, Any]:
+        r = self.risk.state
+        return {
+            "day": (self.state.day or now.date()).isoformat(), "mode": self.mode,
+            "risk": {"realized_pnl": round(r.realized_pnl, 2), "trades_opened": r.trades_opened, "halted": r.halted,
+                     "halt_reason": r.halt_reason},
+            "fired": sorted(getattr(self.strategy, "_fired", ())),
+            "positions": [{
+                "symbol": p.symbol, "side": p.side.value, "product": p.product.value, "qty": p.qty,
+                "entry_price": p.entry_price, "stop": p.stop, "target": p.target, "opened_at": p.opened_at.isoformat(),
+                "entry_order_id": p.entry_order_id, "stop_order_id": p.stop_order_id, "signal_id": p.signal_id,
+                "entry_costs": p.entry_costs,
+            } for p in self.positions.values()],
+        }
+
+    def _persist(self, now: datetime) -> None:
+        """Write open positions and the day's risk state whenever they change. A paper broker's own book
+        lives in memory, so only a replay (which never restarts) is left out."""
+        if self.mode == "replay":
+            return
+        snap = self._snapshot(now)
+        if snap != self._persisted:
+            self.store.set_control(ENGINE_STATE_KEY, snap)
+            self._persisted = snap
+
+    def restore(self) -> bool:
+        """After a restart on the same day: take back the positions this engine opened and the day's
+        realized result, trade count and halt, so the daily loss limit and the exits still apply.
+        Yesterday's state is ignored; anything left open overnight is reported by ``reconcile``."""
+        from .models import Product
+
+        snap = self.store.get_control().get(ENGINE_STATE_KEY)
+        now = to_ist(self.now())
+        if not isinstance(snap, dict) or snap.get("day") != now.date().isoformat() or snap.get("mode") != self.mode:
+            return False
+        self.state = EngineState(day=now.date())
+        self.risk.roll_day(now)
+        risk = snap.get("risk") or {}
+        self.risk.state.realized_pnl = float(risk.get("realized_pnl") or 0.0)
+        self.risk.state.trades_opened = int(risk.get("trades_opened") or 0)
+        self.risk.state.halted = bool(risk.get("halted"))
+        self.risk.state.halt_reason = str(risk.get("halt_reason") or "")
+        self.strategy.reset_day()
+        if hasattr(self.strategy, "_fired"):
+            self.strategy._fired = set(snap.get("fired") or [])
+        self.positions = {}
+        for p in snap.get("positions") or []:
+            try:
+                self.positions[p["symbol"]] = ManagedPosition(
+                    symbol=p["symbol"], side=Side(p["side"]), product=Product(p["product"]), qty=int(p["qty"]),
+                    entry_price=float(p["entry_price"]), stop=float(p["stop"]), target=float(p["target"]),
+                    opened_at=datetime.fromisoformat(p["opened_at"]), entry_order_id=str(p.get("entry_order_id") or ""),
+                    stop_order_id=p.get("stop_order_id"), signal_id=p.get("signal_id"), entry_costs=float(p.get("entry_costs") or 0.0))
+            except (KeyError, ValueError, TypeError) as e:
+                self.store.event("error", f"could not restore a saved position ({p.get('symbol')}): {e}")
+        for pos in self.positions.values():
+            if not pos.stop_order_id:
+                continue
+            try:
+                self.broker.order_status(pos.stop_order_id)
+            except BrokerError:
+                # A paper broker's orders do not outlive the process. The engine's own stop check still applies.
+                pos.stop_order_id = None
+                self.store.event("stop_missing", f"{pos.symbol}: the protective stop order was not found after the restart; "
+                                                 "the engine's own stop check is managing the position", symbol=pos.symbol)
+        self._refresh_strategy()
+        self._persisted = None
+        if self.positions or self.risk.state.trades_opened:
+            self.store.event("engine_restored", f"restarted mid-session: {len(self.positions)} open position(s), "
+                                                f"{self.risk.state.trades_opened} trade(s) and a result of "
+                                                f"{self.risk.state.realized_pnl:.2f} carried over")
+        return True
 
     def _unrealized(self) -> float:
         return sum(p.unrealized(self._last_prices.get(s, p.entry_price)) for s, p in self.positions.items())
@@ -391,14 +470,25 @@ class TradingEngine:
             self._handle_signal(signal, bars, now)
 
     def _handle_signal(self, signal: Signal, bars: list, now: datetime) -> None:
+        from . import harness
+        from .harness import gates
+
         signal_id = new_id()
+        h = harness.current()
+        control = self.store.get_control()
+        # A model role that is only watching ("shadow") is asked and journalled, and the engine then acts as
+        # if it had said "take at full size". It earns authority through the gate, not by being switched on.
+        role = getattr(self.filter, "role", None)  # None for the rule-based baseline: not a harness role
+        stage = gates.stage_of(control, role, h)
         self.store.insert("signals", {
             "id": signal_id, "symbol": signal.symbol, "side": signal.side, "product": signal.product,
             "strategy": signal.strategy, "signal_ts": signal.ts, "entry": signal.entry, "stop": signal.stop,
             "target": signal.target, "reason": signal.reason, "features": signal.features, "mode": self.mode,
+            "harness_id": h.id,
         })
 
         decision: LLMDecision | None = None
+        said: LLMDecision | None = None
         if self.filter.enabled:
             ctx = ReviewContext(
                 signal=signal,
@@ -410,19 +500,21 @@ class TradingEngine:
                 day_realized_pnl=self.risk.state.realized_pnl,
                 trades_today=self.risk.state.trades_opened,
             )
-            decision = self.filter.review(ctx)
+            said = self.filter.review(ctx)
             self.store.insert("llm_decisions", {
-                "signal_id": signal_id, "symbol": signal.symbol, "approve": decision.approve,
-                "size_multiplier": decision.size_multiplier, "confidence": decision.confidence,
-                "rationale": decision.rationale, "risk_flags": decision.risk_flags, "model": decision.model,
-                "latency_ms": decision.latency_ms, "input_tokens": decision.input_tokens,
-                "output_tokens": decision.output_tokens, "error": decision.error,
-                "request_id": decision.request_id, "prompt": decision.prompt,
+                "signal_id": signal_id, "symbol": signal.symbol, "approve": said.approve,
+                "size_multiplier": said.size_multiplier, "confidence": said.confidence,
+                "rationale": said.rationale, "risk_flags": said.risk_flags, "model": said.model,
+                "latency_ms": said.latency_ms, "input_tokens": said.input_tokens,
+                "output_tokens": said.output_tokens, "error": said.error,
+                "request_id": said.request_id, "prompt": said.prompt,
+                "role": role, "stage": stage, "harness_id": h.id, "cost_inr": getattr(said, "cost_inr", 0.0),
             })
+            decision = said if stage == "active" else None  # asked and journalled; applied only with authority
 
         verdict = self.risk.evaluate(
             signal, decision, self.positions, now,
-            kill_switch=bool(self.store.get_control().get("kill_switch")),
+            kill_switch=bool(control.get("kill_switch")),
             available_cash=self.broker.available_cash(),
         )
         self.store.insert("events", {
@@ -432,10 +524,15 @@ class TradingEngine:
         self._shadows[signal_id] = {
             "signal_id": signal_id, "symbol": signal.symbol, "strategy": signal.strategy, "side": signal.side.value,
             "entry": signal.entry, "stop": signal.stop, "target": signal.target, "signal_ts": signal.ts.isoformat(),
-            "llm_decision": "none" if decision is None else ("approve" if decision.approve else "reject"),
-            "llm_size_multiplier": None if decision is None else decision.size_multiplier,
-            "risk_approved": verdict.approved,
+            "llm_decision": "none" if said is None else ("approve" if said.approve else "reject"),
+            "llm_size_multiplier": None if said is None else said.size_multiplier,
+            "risk_approved": verdict.approved, "harness_id": h.id,
         }
+        if said is not None:
+            # What the gate needs to score this answer against the setup with the model left out.
+            self._shadows[signal_id].update(
+                llm_role=role, llm_stage=stage, llm_w=gates.asked_weight(said, self.s.llm_min_confidence),
+                llm_cost_inr=getattr(said, "cost_inr", 0.0), llm_model=said.model)
         if verdict.approved:
             self._enter(signal, verdict.qty, signal_id, now)
 

@@ -75,7 +75,21 @@ class TestCosts:
 
     def test_small_order_brokerage_floor(self):
         c = CostModel(stt_intraday_sell=0, exchange_txn=0, sebi_fee=0, stamp_intraday_buy=0, gst=0)
-        assert c.leg(Side.BUY, 1, 100.0, Product.MIS) == 5.0  # 0.1% would be Rs 0.10
+        # 0.1% would be Rs 0.10. The floor is Rs 5 or 2.5% of the order, whichever is lower: the same rule
+        # the daily plans use, since both read the one schedule in costs.py.
+        assert c.leg(Side.BUY, 1, 100.0, Product.MIS) == 2.5
+        assert c.leg(Side.BUY, 5, 100.0, Product.MIS) == 5.0
+
+    def test_intraday_and_delivery_models_share_one_schedule(self):
+        from thunderbot.costs import GROWW
+        from thunderbot.daily import DeliveryCosts
+
+        c, d = CostModel(), DeliveryCosts()
+        assert c.exchange_txn == d.exchange_pct == GROWW.exchange_txn == 0.0000307
+        assert c.dp_charge_per_sell == d.dp_per_sell == GROWW.dp_charge_per_sell == 23.60
+        assert c.sebi_fee == d.sebi_pct and c.stamp_delivery_buy == d.stamp_buy_pct and c.gst == d.gst_pct
+        for value in (150.0, 2_000.0, 50_000.0):
+            assert GROWW.brokerage(value) == DeliveryCosts.brokerage(value)
 
     def test_mtf_interest(self):
         assert CostModel().mtf_interest(100_000, 10) == 410.0

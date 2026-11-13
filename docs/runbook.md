@@ -172,6 +172,62 @@ Two ways to run it:
 - **A machine with a static IP (needed for live API orders):** `thunderbot invest` as a service on a small
   VPS (the stages above), or `thunderbot tick` from a laptop scheduler (`worker/deploy/laptop/`).
 
+### How orders are carried out
+
+Three modes, chosen on the dashboard or with `thunderbot mode paper|guided|auto`:
+
+| Mode | What happens at a decision | Needs |
+|---|---|---|
+| `paper` (default) | Fills are simulated at the live price with Groww's charges taken off. | Nothing. |
+| `guided` | The whole-share limit orders are worked out and listed as a basket. You place them in the Groww app. Nothing is sent to the broker. | Nothing. This is the first real-money step. |
+| `auto` | The orders go to Groww. | A worker started with `thunderbot invest --live`, which takes `TB_LIVE_TRADING_ENABLED=true`, a matching `TB_EXPECTED_STATIC_IP` and the `--i-understand-the-risks` flag on that machine. |
+
+Asking for `auto` on any other worker (the Vercel function, a laptop without the switches) does not place
+orders. It behaves as `guided` and the dashboard says why. Nothing written from the dashboard can change that.
+
+A basket stays open until the holdings show it was placed. With a Groww key connected the worker reads
+your holdings and closes the basket itself; if they do not match after you mark it placed, it lists what is
+missing. With holdings typed in by hand, marking the basket placed updates the list. A rebalance basket
+that is still open the next day is re-priced, and one basket is open at a time.
+
+### What you really hold
+
+In `guided` mode the plan works on your actual holdings, not a simulated account. They come from Groww
+(read-only, `get_holdings_for_user`, a few times a day and whenever you ask) or from a list you type in:
+symbol, quantity, average price and, if you know it, the purchase date. Anything the plan does not target
+is shown as outside the plan and is never sold by the bot. Reading holdings needs the Groww SDK, so it
+works on a laptop or server worker and not on the Vercel function; there, type the list in.
+
+### Deposits and drift
+
+`thunderbot deposit 25000` (or the dashboard) records new money. At the next daily check it is spent, in
+whole shares, on whatever is furthest below its target, and nothing is sold, so no tax is realised. The
+dashboard always shows where the next rupee would go.
+
+Each holding has a corridor around its target: 5 percentage points, or a fifth of the target if that is
+narrower (`TB_BAND_ABS_PCT`, `TB_BAND_REL_PCT`). A 33% holding may sit between 28% and 38%; a 10% one between
+8% and 12%. The corridors are shown every pass. `core_mix` still rebalances each March by default. Its
+`band` option rebalances only when a holding leaves its corridor, and its test-only options add a monthly
+deposit and stop the plan selling at all, so you can compare the three in the Lab before choosing.
+
+### The tax year
+
+For the current financial year the dashboard shows how much long-term equity gain has been realised, how
+much of the Rs 1.25 lakh exemption is left, and which holdings bought more than a year ago could be sold to
+use it. It is a proposal. Nothing happens unless you confirm it.
+
+A sale and repurchase of the same ticker on one day is netted by the broker as an intraday trade and books
+no gain. So a harvest sells on one day and buys back on the next session (`TB_HARVEST_VIA=t_plus_1`, the
+default, with a night out of the market for that amount), or swaps into a twin fund on the same index on the
+same day (`TB_HARVEST_VIA=twin`; the twin map is `HARVEST_TWINS` in `worker/thunderbot/daily.py`). On a day a
+harvest trades, the daily check is moved to the next session so the two cannot collide. In `guided` and
+`auto` modes a harvest is always a basket for you to place.
+
+This has not been checked against primary tax sources, including the same-day netting and how the
+anti-avoidance rules treat a sale made only to step up cost. Confirm it with a chartered accountant first.
+Holdings read from Groww carry no purchase dates, so they are left out of the proposal and any sale of them
+is counted as short-term.
+
 ## Taxes the backtests assume (financial year 2026-27)
 
 | Instrument | Up to 12 months | After 12 months |
@@ -185,10 +241,16 @@ model's reading of the rules, not tax advice; check your own position before fil
 
 ## Starting and stopping
 
-The worker service runs all the time but trades only after you press **Start paper trading** on
-the dashboard (or run `thunderbot start`). **Hold to stop** (or `thunderbot stop`) closes every
-open position and takes no new trades; the worker keeps running and waits for the next Start.
-Start and stop survive restarts, since they live in the control table.
+The worker service runs all the time but trades only after you press **Start** on the dashboard (or run
+`thunderbot start`). Stopping (`thunderbot stop`) means no new trades. What it does to what is held
+depends on what is held:
+
+- **Investments stay.** The daily plan keeps every holding. Stop and the kill switch never sell them.
+- **Intraday positions are closed**, because they cannot be carried overnight.
+
+Selling the investments is a separate command, `thunderbot sell-all` (or its button, behind a confirmation
+that shows the charges and tax). It also stops new trades. Start, stop and commands survive restarts, since
+they live in the control table.
 
 Paper trading uses live prices and simulates only the orders. `TB_FEED` picks the prices:
 `yahoo` (default) is free Yahoo Finance data, with no account needed, but it is unofficial and can lag
@@ -216,12 +278,13 @@ token requests a day. Fix the credentials in `/etc/thunderbot.env` and restart t
 
 | Situation | Action |
 |---|---|
-| Something looks wrong | Dashboard **Hold to stop** (or `thunderbot stop`, or `thunderbot kill`): flattens all managed positions, blocks entries. |
+| Something looks wrong | Stop from the dashboard (or `thunderbot stop`, or `thunderbot kill`): closes intraday positions and blocks new trades. Investments are not sold. |
 | Want to stop new trades but keep exits running | Dashboard **Pause new entries** (or `thunderbot pause`). |
+| `partial_fill` event | A live delivery order filled in part. The rest was cancelled and only the filled shares are booked; the next check trades the difference. |
 | `exit_failed` event | The engine could not close a position after 3 attempts. **Close it manually in the Groww app now.** |
 | `stop_failed` event | Protective stop rejected; the engine tried to exit immediately. Check the position in the app. |
 | `unmanaged_position` event | A position exists that the engine didn't open (manual trade or a restart mid-trade). The engine never touches it, so handle it yourself. |
-| Worker crashed mid-trade | Broker-side SL orders still protect open positions. On restart the engine reports unmanaged positions. Close them manually or let Groww's 3:20 PM MIS square-off handle it. |
+| Worker crashed mid-trade | Broker-side SL orders still protect open positions. On a restart the same day the engine takes its positions back, with the day's result, trade count and any halt, from the `engine_state` control row, and carries on managing them. Anything it cannot account for is reported as unmanaged: close that manually or let Groww's 3:20 PM MIS square-off handle it. |
 | IP changed | Live mode refuses to start. Fix the VPS IP or update the whitelist (some brokers allow changes only weekly). |
 | Repeated errors | After 5 consecutive failed ticks, the engine engages the kill switch itself and tries to flatten. |
 

@@ -50,18 +50,26 @@ def authorized(headers: dict[str, str], env: dict[str, str] | None = None) -> bo
 
 def build_runner(settings: Settings, store: Any, scheduler: str = "serverless"):
     """The paper investing runner on free Yahoo prices, with state in ``store``."""
+    from .broker.groww import holdings_reader
     from .chart import ChartQuotes
+    from .daily import CapitalGainsTax
     from .invest import InvestRunner
     from .llm.rebalance import build_rebalance_reviewer
     from .notify import build_notifier
 
     quotes = ChartQuotes()
+    # mode="paper" and no broker: this worker can never place an order. Asked for automatic orders, it
+    # publishes a basket to place by hand instead (see InvestRunner._exec_mode).
     return InvestRunner(
         store, quotes, settings.clock(), settings.capital, mode="paper", strategy=settings.invest_strategy,
         run_at=parse_hhmm(settings.invest_at), cutoff=parse_hhmm(settings.invest_cutoff), feed_status=quotes.status,
         liquid_symbol=settings.liquid_symbol, reviewer=build_rebalance_reviewer(settings),
         notify=build_notifier(settings.telegram_token, settings.telegram_chat_id, settings.ntfy_topic),
         scheduler=scheduler, tick_minutes=settings.tick_minutes,
+        holdings_source=holdings_reader(settings.groww_api_key, settings.groww_totp_secret, settings.groww_api_secret,
+                                        cache_path=settings.data_path / "groww_token.json"),
+        band_abs_pct=settings.band_abs_pct, band_rel_pct=settings.band_rel_pct, harvest_via=settings.harvest_via,
+        tax=CapitalGainsTax(slab_rate=settings.slab_rate_pct / 100),
     )
 
 
