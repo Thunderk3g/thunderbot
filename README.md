@@ -26,6 +26,41 @@ to keep alive.
 > retail intraday bot driven by an LLM or ML model. SEBI found 71% of intraday cash traders lost money in
 > FY23. Thunderbot is built to show such results plainly before real money is at risk.
 
+## The grand idea
+
+What is above is what Thunderbot is today. What it is meant to become:
+
+**An open, self-hosted portfolio manager for Indian investors, run by rules, assisted by an LLM, and
+defined by a harness its owner can read and edit.** You bring your own broker key and your own LLM key.
+You state your goals and limits in plain files. The system proposes what to hold, shows what each choice
+would have earned after costs and tax, trades on paper until its own record justifies real money, and
+keeps a journal that can show whether every part of it, the LLM included, earned its place.
+
+The harness is everything that shapes a decision and is not the engine: the **policy** (goals, limits,
+allowed instruments), the **plans** (rules that decide what to hold), the **roles** (what each LLM call
+is for and may return), the **tools** (what data a role may read), the **gates** (tests to pass before
+anything gets more authority) and the **journal**. Editing the harness changes what is proposed. It
+cannot change what the engine allows.
+
+| Pillar | Today | Still missing |
+|---|---|---|
+| Honest backtests | After charges and tax, beside the index and a no-timing twin | Correction for trying many settings; survivorship-free stock lists |
+| Paper trading | Daily investing and the intraday desk, from a scheduled function | Fills from 5-minute bars flatter liquidity |
+| Portfolio management | Fixed-mix and trend plans over a few ETFs | Your actual holdings, goals, risk profile, construction, drift bands, tax-aware rebalancing |
+| LLM roles | Three, veto or shrink only, every prompt and reply journalled | One provider interface; a role that reads text, which is what LLMs are evidenced to do well |
+| Measuring the LLM | Every setup followed to its outcome, taken or not | A pass or fail rule set in advance, with a minimum sample |
+| Editable harness | Strategy parameters and risk limits | Prompts, roles, plans and gates as versioned files |
+| Bring your own keys | Environment variables | A setup screen that checks each key; one clean install per person |
+| Explaining itself | A rationale with each decision | A plain account of why the portfolio is what it is |
+
+"Anyone can use it" means anyone can run their own copy with their own keys, on paper first. It does not
+mean one website holding everyone's broker credentials: Groww's terms, the exchange's static-IP rule and
+plain security all rule that out.
+
+The full statement, the rules the design does not bend, the stages, and a **brief for a reviewer** asked
+to find what is wrong with the project are in [`docs/vision.md`](docs/vision.md). How a trade actually
+happens, in plain words, is in [`docs/how-it-works.md`](docs/how-it-works.md).
+
 ## The dashboard
 
 | Page | What it is for |
