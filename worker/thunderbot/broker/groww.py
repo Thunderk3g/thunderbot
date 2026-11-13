@@ -15,6 +15,7 @@ spellings and fail loudly on anything else, never silently.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -120,12 +121,18 @@ class GrowwSession:
         self.api_secret = api_secret
         self.cache_path = cache_path
 
+    def _fingerprint(self) -> str:
+        """Identifies the API key a cached token was issued for, without storing the key."""
+        return hashlib.sha256(self.api_key.encode()).hexdigest()[:16]
+
     def _load_cached(self, now: datetime) -> str | None:
         if not self.cache_path or not self.cache_path.exists():
             return None
         try:
             data = json.loads(self.cache_path.read_text())
             issued = datetime.fromisoformat(data["issued_at"])
+            if data.get("key") not in (None, self._fingerprint()):
+                return None  # the cached token belongs to a different API key
             if not token_is_stale(issued, now):
                 return data["token"]
         except (KeyError, ValueError, json.JSONDecodeError):
@@ -150,7 +157,8 @@ class GrowwSession:
             token = GrowwAPI.get_access_token(api_key=self.api_key, secret=self.api_secret)
         if self.cache_path:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self.cache_path.write_text(json.dumps({"token": token, "issued_at": now.isoformat()}))
+            self.cache_path.write_text(json.dumps({"token": token, "issued_at": now.isoformat(),
+                                                   "key": self._fingerprint()}))
             self.cache_path.chmod(0o600)
         return token, True
 

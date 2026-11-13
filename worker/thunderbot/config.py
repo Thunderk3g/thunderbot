@@ -131,17 +131,23 @@ class Settings:
     llm_timeout_seconds: float = 60.0
     llm_min_confidence: float = 0.5
     # An OpenAI-compatible endpoint for the AI desk's trader (xAI Grok, Groq, OpenAI, OpenRouter, ...).
-    llm_api_key: str | None = None
+    llm_api_key: str | None = field(default=None, repr=False)
     llm_base_url: str | None = None
     llm_chat_model: str | None = None
+    # Anthropic's own API. Set from ANTHROPIC_API_KEY or from a key saved in the dashboard; when unset the
+    # SDK still looks for its usual credentials.
+    anthropic_api_key: str | None = field(default=None, repr=False)
+    llm_source: str | None = None  # "dashboard" | "environment" | None: where the LLM key came from
+    llm_preset: str | None = None  # the setup screen's provider id, when the key was saved there
 
     # AI desk (intraday, ML-scored setups decided by the LLM). Paper only on a serverless worker.
     ai_symbols: list[str] = field(default_factory=lambda: list(AI_UNIVERSE))
 
     # Groww credentials and compliance
-    groww_api_key: str | None = None
-    groww_totp_secret: str | None = None
-    groww_api_secret: str | None = None
+    groww_api_key: str | None = field(default=None, repr=False)
+    groww_totp_secret: str | None = field(default=None, repr=False)
+    groww_api_secret: str | None = field(default=None, repr=False)
+    groww_source: str | None = None  # "dashboard" | "environment" | None
     expected_static_ip: str | None = None
     invest_strategy: str = "core_mix"  # daily strategy: core_mix | etf_trend | etf_rank | index_trend | momentum
     invest_at: str = "15:10"  # IST time of the daily decision (prices then stand in for the close)
@@ -150,7 +156,7 @@ class Settings:
     slab_rate_pct: float = 30.0  # your marginal income-tax rate, for liquid and short-term gold ETF gains
     tick_minutes: float = 15.0  # the longest gap between scheduler calls in market hours (Vercel's free tier)
     cron_secret: str | None = None  # shared secret the schedulers send to the serverless worker
-    telegram_token: str | None = None
+    telegram_token: str | None = field(default=None, repr=False)
     telegram_chat_id: str | None = None
     ntfy_topic: str | None = None
     feed: str = "yahoo"  # price source for paper trading: groww (official, paid plan) | yahoo (free, can lag)
@@ -162,7 +168,11 @@ class Settings:
     data_dir: str = "var"
     backtest_data_dir: str = "data/groww"
     supabase_url: str | None = None
-    supabase_service_key: str | None = None
+    supabase_service_key: str | None = field(default=None, repr=False)
+
+    # The environment's own credential values, kept so keys saved in the dashboard can be re-applied or
+    # dropped on a later pass (see credentials.apply_credentials). Never shown.
+    env_credentials: dict[str, Any] | None = field(default=None, repr=False)
 
     warnings: list[str] = field(default_factory=list)
 
@@ -196,6 +206,7 @@ class Settings:
             # With a chat endpoint configured the LLM is on unless TB_LLM_ENABLED says otherwise.
             llm_enabled=_env_bool("TB_LLM_ENABLED", bool(_env("LLM_API_KEY") and _env("LLM_BASE_URL") and _env("LLM_MODEL"))),
             llm_api_key=_env("LLM_API_KEY"),
+            anthropic_api_key=_env("ANTHROPIC_API_KEY"),
             llm_base_url=_env("LLM_BASE_URL"),
             llm_chat_model=_env("LLM_MODEL"),
             ai_symbols=_env_list("TB_AI_SYMBOLS", list(AI_UNIVERSE)),
@@ -205,6 +216,7 @@ class Settings:
             llm_timeout_seconds=_env_float("TB_LLM_TIMEOUT_SECONDS", cls.llm_timeout_seconds),
             llm_min_confidence=_env_float("TB_LLM_MIN_CONFIDENCE", cls.llm_min_confidence),
             groww_api_key=_env("GROWW_API_KEY"),
+            groww_source="environment" if _env("GROWW_API_KEY") else None,
             groww_totp_secret=_env("GROWW_TOTP_SECRET"),
             groww_api_secret=_env("GROWW_API_SECRET"),
             expected_static_ip=_env("TB_EXPECTED_STATIC_IP"),
@@ -323,14 +335,19 @@ class Settings:
                 "allow_mtf_api": self.allow_mtf_api,
                 "require_login_confirmation": self.require_login_confirmation,
                 "static_ip_configured": bool(self.expected_static_ip),
+                "expected_static_ip": self.expected_static_ip,
                 "groww_configured": bool(self.groww_api_key),
+                "groww_source": self.groww_source_view,
+                "groww_auth": self.groww_auth,
                 "feed": self.feed,
                 "liquid_symbol": self.liquid_symbol,
                 "slab_rate_pct": self.slab_rate_pct,
                 "notifications": bool((self.telegram_token and self.telegram_chat_id) or self.ntfy_topic),
                 "llm_model": self.llm_chat_model if self.chat_llm else self.llm_model,
                 "llm_provider": self.llm_provider,
-                "llm_configured": self.chat_llm or bool(os.environ.get("ANTHROPIC_API_KEY")),
+                "llm_configured": self.chat_llm or self.has_anthropic_key,
+                "llm_source": self.llm_source_view,
+                "llm_preset": self.llm_preset,
                 "ai_symbols": list(self.ai_symbols),
                 "orders_per_second": self.orders_per_second,
             },
@@ -356,7 +373,35 @@ class Settings:
             from .llm.trader import provider_of
 
             return provider_of(self.llm_base_url)
-        return "Anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "none"
+        return "Anthropic" if self.has_anthropic_key else "none"
+
+    @property
+    def has_anthropic_key(self) -> bool:
+        return bool(self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY"))
+
+    @property
+    def llm_source_view(self) -> str | None:
+        """Where the LLM key in use came from: the dashboard's setup screen, the environment, or nowhere."""
+        if self.llm_source:
+            return self.llm_source
+        return "environment" if self.chat_llm or self.has_anthropic_key else None
+
+    @property
+    def groww_source_view(self) -> str | None:
+        if not self.groww_api_key:
+            return None
+        return self.groww_source or "environment"
+
+    @property
+    def groww_auth(self) -> str | None:
+        """"totp" for a TOTP-type key (unattended login), "approval" for one that needs daily approval on Groww."""
+        if not self.groww_api_key:
+            return None
+        from .broker.groww import key_role
+
+        if key_role(self.groww_api_key) == "auth-totp" or (self.groww_totp_secret and not self.groww_api_secret):
+            return "totp"
+        return "approval"
 
     def clock(self) -> MarketClock:
         return MarketClock(

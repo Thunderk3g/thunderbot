@@ -55,9 +55,12 @@ def _trading_days(start: date, end: date) -> int:
 
 
 class DataLoader:
-    def __init__(self, settings: Settings, groww_client_factory=None) -> None:
+    def __init__(self, settings: Settings, groww_client_factory=None, stored_factory=None) -> None:
         self.s = settings
         self.groww_client_factory = groww_client_factory
+        # Returns a client factory built from keys saved in the dashboard, or None; asked at load time
+        # so a key saved after the worker started is found.
+        self.stored_factory = stored_factory
 
     def load(self, source: str, symbols: list[str], start: date, end: date) -> tuple[dict[str, list[Candle]], str]:
         if source not in DATA_SOURCES:
@@ -100,9 +103,10 @@ class DataLoader:
             except FileNotFoundError as e:
                 raise JobError(f"{e}. Run `thunderbot fetch-history --out {self.s.backtest_data_dir}` first.") from e
             return data, f"CSV candles from {self.s.backtest_data_dir}"
-        if self.groww_client_factory is None:
+        factory = self.groww_client_factory or (self.stored_factory() if self.stored_factory else None)
+        if factory is None:
             raise JobError("Groww credentials are not configured on the worker")
-        md = GrowwMarketData(self.groww_client_factory(), exchange=self.s.exchange)
+        md = GrowwMarketData(factory(), exchange=self.s.exchange)
         data = {}
         for sym in symbols:
             data[sym] = md.candles(sym, interval, start_dt, end_dt)
@@ -153,8 +157,24 @@ class JobRunner:
                  poll_seconds: float = 2.0) -> None:
         self.store = store
         self.base = base_settings
-        self.loader = DataLoader(base_settings, groww_client_factory)
+        self.loader = DataLoader(base_settings, groww_client_factory, self._stored_groww_factory)
         self.poll = poll_seconds
+
+    def _stored_groww_factory(self):
+        s = self._current()
+        if not s.groww_api_key:
+            return None
+
+        def factory():
+            from growwapi import GrowwAPI
+
+            from .broker.groww import GrowwSession
+
+            session = GrowwSession(s.groww_api_key or "", s.groww_totp_secret, s.groww_api_secret,
+                                   cache_path=s.data_path / "groww_token.json")
+            return GrowwAPI(session.token()[0])
+
+        return factory
 
     def publish_catalog(self) -> None:
         """Let the dashboard's Lab render even when only the job runner is up."""
@@ -165,7 +185,7 @@ class JobRunner:
         self.store.set_control("daily_catalog", DAILY_CATALOG)
         control = self.store.get_control()
         if "effective_settings" not in control:
-            new, rejected = self.base.with_overrides(control.get("settings_overrides") or {})
+            new, rejected = self._current().with_overrides(control.get("settings_overrides") or {})
             self.store.set_control("effective_settings", {**new.public_view(), "rejected": rejected})
 
     def run_forever(self) -> None:
@@ -245,7 +265,34 @@ class JobRunner:
             return self.invest(params, progress)
         if kind == "train":
             return self.train(params, progress)
+        if kind == "groww_check":
+            return self.groww_check(params, progress)
         raise JobError(f"unknown job kind {kind!r}")
+
+    def _current(self) -> Settings:
+        """Settings with the keys saved in the dashboard applied, read afresh for each job that needs them."""
+        from .credentials import apply_credentials
+
+        return apply_credentials(self.base, self.store)
+
+    def groww_check(self, params: dict[str, Any], progress, **overrides: Any) -> dict[str, Any]:
+        """Read-only check of the Groww credentials and this machine's IP. Never places an order.
+
+        The result is returned to the job row and also kept in the control row ``groww_check`` for the
+        dashboard's setup screen. No credential or token appears in either.
+        """
+        from .broker.check import login_check
+
+        s = self._current()
+        try:
+            cache = s.data_path / "groww_token.json"
+        except OSError:  # a serverless function has no writable working directory
+            cache = None
+        result = login_check(s.groww_api_key, s.groww_totp_secret, s.groww_api_secret, cache_path=cache,
+                             fresh=bool(params.get("fresh")), expected_ip=s.expected_static_ip, **overrides)
+        progress(1.0)
+        self.store.set_control("groww_check", result)
+        return result
 
     def train(self, params: dict[str, Any], progress) -> dict[str, Any]:
         """Retrain the AI desk's setup model on the last 60 days of 5-minute bars and make it the active one."""

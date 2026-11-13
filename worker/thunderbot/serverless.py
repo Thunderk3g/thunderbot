@@ -99,6 +99,7 @@ def run_jobs(settings: Settings, store: Any, deadline: float, job_id: str | None
 def handle(op: str, params: dict[str, str] | None = None, settings: Settings | None = None, store: Any = None,
            budget_seconds: float = 240.0) -> tuple[int, dict[str, Any]]:
     """Run one operation. Returns (HTTP status, JSON body). Never raises: errors come back as a 500 body."""
+    from .credentials import apply_credentials
     from .store import build_remote_store
 
     params = params or {}
@@ -112,6 +113,9 @@ def handle(op: str, params: dict[str, str] | None = None, settings: Settings | N
                          "strategy": settings.invest_strategy, "run_at": settings.invest_at, "liquid_symbol": settings.liquid_symbol,
                          "reviewer": settings.llm_enabled, "llm": settings.llm_provider, "mode": "paper"}
         store = store or build_remote_store(settings.supabase_url, settings.supabase_service_key)
+        # Keys saved from the dashboard's setup screen win over the environment's. They cover the LLM and
+        # the Groww login; nothing saved there can enable real orders.
+        settings = apply_credentials(settings, store)
         deadline = started + budget_seconds
         if op == "job":
             ran = run_jobs(settings, store, deadline, params.get("id") or None)

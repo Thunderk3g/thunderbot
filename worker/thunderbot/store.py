@@ -25,7 +25,7 @@ from .clock import now_ist
 log = logging.getLogger(__name__)
 
 TABLES = ("events", "signals", "llm_decisions", "orders", "trades", "jobs", "equity", "signal_outcomes", "daily_runs",
-          "models")
+          "models", "secrets")
 
 
 def _matches(row: dict[str, Any], filters: dict[str, Any] | None) -> bool:

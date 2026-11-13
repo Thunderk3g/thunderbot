@@ -51,6 +51,17 @@ def _settings() -> Settings:
     return s
 
 
+def _stored(s: Settings, store=None) -> Settings:
+    """Settings with the keys saved from the dashboard's setup screen applied on top of the environment.
+
+    Saved keys cover the LLM and the Groww login only. Live trading, the static IP and MTF stay with
+    the environment and the command line.
+    """
+    from .credentials import apply_credentials
+
+    return apply_credentials(s, store or build_store(s.data_path, s.supabase_url, s.supabase_service_key))
+
+
 def _strategy(s: Settings) -> Strategy:
     return build_strategy(s.strategy, s.strategy_params, s.allow_short)
 
@@ -90,7 +101,7 @@ def cmd_fetch_history(args, s: Settings) -> int:
 
         md = YahooMarketData(exchange=s.exchange)
     else:
-        md = GrowwMarketData(_groww_client(s), exchange=s.exchange)
+        md = GrowwMarketData(_groww_client(_stored(s)), exchange=s.exchange)
     end = datetime.combine(date.fromisoformat(args.end), datetime.min.time(), tzinfo=IST) if args.end else now_ist()
     start = end - timedelta(days=args.days)
     out = Path(args.out)
@@ -150,6 +161,7 @@ def _run_engine(s: Settings, mode: str) -> int:
     from .throttle import OrderThrottle
 
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    s = _stored(s, store)
     if mode == "paper" and s.feed == "yahoo":
         return _run_paper_on_yahoo(s, store)
     # The worker stays up even if the Groww login fails, and shows the reason on the dashboard.
@@ -200,6 +212,7 @@ def _invest_runner(s: Settings, mode: str, store, scheduler: str = "worker"):
     from .llm.rebalance import build_rebalance_reviewer
     from .notify import build_notifier
 
+    s = _stored(s, store)
     broker = None
     if mode == "live" or s.feed == "groww":
         from .broker.groww import GrowwBroker, GrowwLink
@@ -257,6 +270,7 @@ def cmd_tick(args, s: Settings) -> int:
     remote = bool(s.supabase_url and s.supabase_service_key)
     store = build_remote_store(s.supabase_url, s.supabase_service_key) if remote else build_store(s.data_path, None, None)
     try:
+        s = _stored(s, store)
         publish_catalog(s, store)
         summary = _invest_runner(s, mode, store, scheduler="serverless").tick()
         if not args.no_jobs:
@@ -324,7 +338,10 @@ def cmd_serve(args, s: Settings) -> int:
 
     key = os.environ.get("TB_LOCAL_API_KEY") or _secrets.token_urlsafe(24)
     if "TB_LOCAL_API_KEY" not in os.environ:
-        print(f"TB_LOCAL_API_KEY not set; generated one for this session:\n  {key}")
+        print(f"TB_LOCAL_API_KEY not set; generated one for this session:\n  {key}\n"
+              "Keys saved in the dashboard's Setup are encrypted under it, so set TB_LOCAL_API_KEY (or TB_SECRET_KEY)\n"
+              "to a fixed value if you want them to survive a restart.")
+        os.environ["TB_LOCAL_API_KEY"] = key  # the job runner in this process decrypts saved keys with it
     httpd = serve(s, args.host, args.port, key, run_jobs=not args.no_jobs, groww_client_factory=_groww_factory(s))
     print(f"Local API on http://{args.host}:{args.port}. Dashboard env:\n"
           f"  SUPABASE_URL=http://{args.host}:{args.port}\n  SUPABASE_SERVICE_ROLE_KEY={key}")
@@ -367,6 +384,7 @@ def cmd_replay(args, s: Settings) -> int:
         keep = set(days)
         data = {sym: [c for c in bars if c.ts.date() in keep] for sym, bars in data.items()}
     store = build_store(s.data_path, s.supabase_url, s.supabase_service_key)
+    s = _stored(s, store)
     reviewer = args.reviewer
     if reviewer == "claude":
         s.llm_enabled = True
@@ -432,38 +450,24 @@ def cmd_control(args, s: Settings) -> int:
 
 def cmd_login_check(args, s: Settings) -> int:
     """Read-only Groww check: log in, fetch the profile, and probe the live-data plan. Never places orders."""
-    from .broker.base import BrokerError
-    from .broker.groww import key_role
+    from .broker.check import login_check
 
-    if not s.groww_api_key:
-        print("GROWW_API_KEY is not set (put it in worker/.env or /etc/thunderbot.env).", file=sys.stderr)
-        return 2
-    print(f"API key type: {key_role(s.groww_api_key) or 'unknown'}")
-    try:
-        session = _groww_session(s)
-        token, fresh = session.token(force_refresh=args.fresh)
-    except BrokerError as e:
-        print(f"Setup problem: {e}", file=sys.stderr)
-        return 2
-    except Exception as e:
-        print(f"Login failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return 1
-    print(f"Login OK ({'new token' if fresh else 'cached token'}; token not shown).")
-    from growwapi import GrowwAPI
-
-    client = GrowwAPI(token)
-    try:
-        client.get_user_profile()
-        print("Profile: OK")
-    except Exception as e:
-        print(f"Profile: failed ({type(e).__name__}: {e})")
-    try:
-        ltp = client.get_ltp(exchange_trading_symbols=("NSE_RELIANCE",), segment="CASH")
-        print(f"Live data: OK (RELIANCE LTP {ltp.get('NSE_RELIANCE')})")
-    except Exception as e:
-        print(f"Live data: unavailable ({type(e).__name__}: {e}). The Live Data API needs a paid Trade API plan.")
+    s = _stored(s)
+    result = login_check(s.groww_api_key, s.groww_totp_secret, s.groww_api_secret,
+                         cache_path=s.data_path / "groww_token.json", fresh=args.fresh, expected_ip=s.expected_static_ip)
+    for step in result["steps"]:
+        print(f"{step['name']}: {'OK' if step['ok'] else 'FAILED'} ({step['detail']})")
+    ip = result["ip"]
+    if ip:
+        if ip["expected"]:
+            print(f"Static IP: {'matches' if ip['ok'] else 'does NOT match'} (this machine {ip['observed']}, registered {ip['expected']})")
+        else:
+            print(f"Static IP: this machine is {ip['observed']}; TB_EXPECTED_STATIC_IP is not set")
     print("No orders were placed. Orders additionally require this host's IP to be whitelisted on Groww.")
-    return 0
+    if result["ok"]:
+        return 0
+    failed = next((x["name"] for x in result["steps"] if not x["ok"]), "")
+    return 2 if failed in ("Key", "SDK") else 1
 
 
 def cmd_check_ip(args, s: Settings) -> int:

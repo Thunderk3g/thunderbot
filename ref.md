@@ -7,12 +7,14 @@ Longer explanation and a troubleshooting table: [`docs/no-server.md`](docs/no-se
 ## 1. Supabase
 
 1. **Project:** use the existing Thunderbot project, or create one in Mumbai (`ap-south-1`). Free plan is enough.
-2. **Apply the four migrations, in filename order** (`supabase db push`, or run each file in the SQL editor):
+2. **Apply the six migrations, in filename order** (`supabase db push`, or run each file in the SQL editor):
    ```
    supabase/migrations/20261016000000_init.sql
    supabase/migrations/20261016120000_platform.sql
    supabase/migrations/20261111000000_serverless.sql     -- daily_runs lock; allows job kind 'invest'
    supabase/migrations/20261111000100_scheduler.sql      -- pg_cron + pg_net jobs, wake() and watchdog()
+   supabase/migrations/20261112000000_ai_desk.sql        -- models table; allows job kind 'train'
+   supabase/migrations/20261113000000_secrets.sql        -- encrypted keys from the Setup screen; job kind 'groww_check'
    ```
    If the last one fails on `create extension pg_cron`, enable **Cron** under Integrations first, then rerun it.
    Do not add RLS policies: every table has RLS on with no policies, and only the secret key may read or write.
@@ -41,11 +43,13 @@ Longer explanation and a troubleshooting table: [`docs/no-server.md`](docs/no-se
    | `DASHBOARD_USER` | the owner's chosen login name |
    | `DASHBOARD_PASSWORD` | a strong password, chosen by the owner |
    | `CRON_SECRET` | a new random string, e.g. `openssl rand -hex 32` |
+   | `TB_SECRET_KEY` | another new random string; encrypts the keys saved on the Setup screen. Use the same value on any other machine that runs the worker |
    | `TB_CAPITAL` | paper capital in rupees, e.g. `500000` |
 
    Optional: `TB_INVEST_STRATEGY` (default `core_mix`), `TB_LIQUID_SYMBOL` (`LIQUIDCASE`), `TB_SLAB_RATE_PCT` (`30`),
-   `TB_NTFY_TOPIC` or `TB_TELEGRAM_TOKEN` + `TB_TELEGRAM_CHAT_ID` (alerts), `TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY`
-   (rebalance reviewer). **Do not set** `TB_LIVE_TRADING_ENABLED`, `GROWW_*` or `TB_EXPECTED_STATIC_IP` here: live
+   `TB_NTFY_TOPIC` or `TB_TELEGRAM_TOKEN` + `TB_TELEGRAM_CHAT_ID` (alerts). The LLM key is entered by the owner on the
+   dashboard's Setup screen after the deploy, not here (`TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY` still works as
+   the environment route). **Do not set** `TB_LIVE_TRADING_ENABLED`, `GROWW_*` or `TB_EXPECTED_STATIC_IP` here: live
    orders cannot run from Vercel (no static IP).
 3. **Deploy `main`.** Nothing else to configure: `dashboard/vercel.json` already sets region `bom1`, a 300-second
    limit for `api/worker.py`, a 15-minute weekday schedule (Vercel Schedules, beta) and a daily cron.

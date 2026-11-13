@@ -27,9 +27,9 @@ The reasoning and sources behind each choice are in
 ### 1. Supabase
 
 1. Create a project (the free plan is enough; pick the Mumbai region).
-2. Apply the four files in `supabase/migrations/` in order: `supabase db push`, or paste each into the
-   SQL editor. The last one enables `pg_cron` and `pg_net` and creates the schedules. They do nothing
-   until step 3.
+2. Apply every file in `supabase/migrations/` in order: `supabase db push`, or paste each into the
+   SQL editor. `20261111000100_scheduler.sql` enables `pg_cron` and `pg_net` and creates the schedules;
+   they do nothing until step 3. `20261113000000_secrets.sql` adds the table for keys saved on the Setup screen.
 3. Note the project URL and a secret key (Settings > API keys: an `sb_secret_...` key, or the legacy
    `service_role` key).
 
@@ -46,11 +46,15 @@ The reasoning and sources behind each choice are in
    | `SUPABASE_SERVICE_ROLE_KEY` | the secret key |
    | `DASHBOARD_USER`, `DASHBOARD_PASSWORD` | your dashboard login |
    | `CRON_SECRET` | a long random string, for example from `openssl rand -hex 32` |
+   | `TB_SECRET_KEY` | another long random string; it encrypts the keys you save on the Setup screen |
    | `TB_CAPITAL` | paper capital in rupees, for example `500000` |
 
    Optional: `TB_INVEST_STRATEGY` (`core_mix` by default), `TB_LIQUID_SYMBOL` (`LIQUIDCASE`),
-   `TB_SLAB_RATE_PCT` (`30`), `TB_NTFY_TOPIC` or `TB_TELEGRAM_TOKEN` + `TB_TELEGRAM_CHAT_ID` for alerts,
-   and `TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY` for the rebalance reviewer.
+   `TB_SLAB_RATE_PCT` (`30`), `TB_NTFY_TOPIC` or `TB_TELEGRAM_TOKEN` + `TB_TELEGRAM_CHAT_ID` for alerts.
+   The LLM needs no variable: after the first deploy, open **Setup**, pick a provider, paste your key
+   and choose a model. The key is stored encrypted and both the rebalance reviewer and the AI desk use
+   it. (`TB_LLM_ENABLED=true` + `ANTHROPIC_API_KEY`, or `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`,
+   still work; a key saved in Setup wins over them.)
 3. Deploy. `dashboard/vercel.json` already pins the function to Mumbai (`bom1`), gives it 300 seconds, and
    registers two schedules: a 15-minute tick from 09:00 to 15:45 IST on weekdays (Vercel Schedules, a
    public beta since 4 November 2026) and the older once-a-day cron as a stand-in, set to fire in the hour

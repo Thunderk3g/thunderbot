@@ -16,8 +16,10 @@ groww = ["growwapi>=1.5.0", "pyotp>=2.9"]
 yahoo = ["yfinance>=0.2.54"]
 llm = ["anthropic>=1.15.0", "pydantic>=2.6"]
 ai = ["numpy>=1.26"]  # training the AI desk's model; prediction needs nothing
-all = ["growwapi>=1.5.0", "pyotp>=2.9", "yfinance>=0.2.54", "anthropic>=1.15.0", "pydantic>=2.6", "numpy>=1.26"]
-dev = ["pytest>=8", "pydantic>=2.6", "numpy>=1.26"]
+secrets = ["cryptography>=42"]  # reading keys saved from the dashboard's setup screen; environment keys need nothing
+all = ["growwapi>=1.5.0", "pyotp>=2.9", "yfinance>=0.2.54", "anthropic>=1.15.0", "pydantic>=2.6", "numpy>=1.26",
+       "cryptography>=42"]
+dev = ["pytest>=8", "pydantic>=2.6", "numpy>=1.26", "cryptography>=42"]
 
 [project.scripts]
 thunderbot = "thunderbot.cli:main"

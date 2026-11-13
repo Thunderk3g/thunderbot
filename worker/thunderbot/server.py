@@ -8,6 +8,10 @@ dashboard uses:
 - ``GET /rest/v1/<table>?select=a,b&order=col.desc&limit=n&col=eq.x`` (eq, neq, gt, gte, lt, lte, in)
 - ``POST /rest/v1/<table>`` insert/upsert (object or array)
 - ``PATCH /rest/v1/<table>?id=eq.x`` partial update
+- ``DELETE /rest/v1/<table>?id=eq.x`` (``secrets``: ``?name=eq.x``)
+
+The ``secrets`` table holds the keys saved from the dashboard's setup screen as ciphertext (see
+``thunderbot/secrets.py``). Like every table it is served only with the API key.
 
 It binds to 127.0.0.1 by default and requires the API key on every request.
 It also runs the research job runner in a background thread.
@@ -104,14 +108,18 @@ class LocalAPI:
     def publish_defaults(self) -> None:
         control = self.store.get_control()
         self.store.set_control("strategy_catalog", catalog())
-        if "effective_settings" not in control or "settings_overrides" in control:
-            self.refresh_effective(control.get("settings_overrides") or {})
+        self.refresh_effective(control.get("settings_overrides") or {})
         for key in ("kill_switch", "paused"):
             if key not in control:
                 self.store.set_control(key, False)
 
-    def refresh_effective(self, overrides: dict[str, Any]) -> None:
-        new, rejected = self.settings.with_overrides(overrides)
+    def refresh_effective(self, overrides: dict[str, Any] | None = None) -> None:
+        """Publish the settings in force: the environment, keys saved in the dashboard, then its overrides."""
+        from .credentials import apply_credentials
+
+        if overrides is None:
+            overrides = self.store.get_control().get("settings_overrides") or {}
+        new, rejected = apply_credentials(self.settings, self.store).with_overrides(overrides)
         self.store.set_control("effective_settings", {**new.public_view(), "rejected": rejected})
 
     UNIQUE = {"daily_runs": ("kind", "day")}  # mirrors the unique constraints in supabase/migrations
@@ -127,12 +135,28 @@ class LocalAPI:
                 if row["key"] == "settings_overrides":
                     self.refresh_effective(row.get("value") or {})
                 continue
+            if table == "secrets":
+                # One row per name, as with the primary key in Postgres. Rows hold ciphertext only.
+                name = str(row.get("name") or "").strip()
+                if not name or not row.get("ciphertext"):
+                    raise ValueError("a secret needs a name and a ciphertext")
+                self.store.insert(table, {**row, "name": name, "id": name})
+                self.refresh_effective()
+                continue
             key = self.UNIQUE.get(table)
             if key and not upsert and self.store.select(table, {k: row.get(k) for k in key}, limit=1):
                 return False
             row.setdefault("id", new_id())
             self.store.insert(table, row)
         return True
+
+    def delete(self, table: str, params: list[tuple[str, str]]) -> None:
+        """Delete the rows named by id=eq.<id> (secrets: name=eq.<name>)."""
+        col = "name" if table == "secrets" else "id"
+        ids = [v.partition(".")[2] for k, v in params if k == col and v.startswith("eq.")]
+        self.store.delete(table, ids)
+        if table == "secrets":
+            self.refresh_effective()
 
     def patch(self, table: str, params: list[tuple[str, str]], body: dict[str, Any]) -> list[dict[str, Any]]:
         """Update the rows named by id=eq.<id> that also match every other filter. Returns the rows changed."""
@@ -214,8 +238,7 @@ def make_handler(api: LocalAPI):
             r = self._route()
             if r is None:
                 return
-            ids = [v.partition(".")[2] for k, v in r[1] if k == "id" and v.startswith("eq.")]
-            api.store.delete(r[0], ids)
+            api.delete(r[0], r[1])
             self._send(204)
 
         def do_PATCH(self):

@@ -145,9 +145,9 @@ class ClaudeSignalFilter:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self.s = settings
         if client is None:
-            import anthropic
+            from .provider import anthropic_client
 
-            client = anthropic.Anthropic(timeout=settings.llm_timeout_seconds, max_retries=2)
+            client = anthropic_client(settings)
         self.client = client
         self._output_model = _review_output_model()
 
@@ -228,7 +228,9 @@ def _review_output_model():
 
 
 def build_filter(settings: Settings, reviewer: str = "auto") -> SignalFilter:
-    """``auto``: Claude when TB_LLM_ENABLED, else none. ``heuristic``: the free rule-based baseline."""
+    """``auto``: the configured LLM when it is enabled (an OpenAI-compatible endpoint, or Claude through
+    Anthropic's API), else none. ``heuristic``: the free rule-based baseline. Which key and model are in
+    use is settled before this is called (``credentials.apply_credentials``)."""
     if reviewer == "heuristic":
         return HeuristicFilter(settings)
     if reviewer == "none" or not settings.llm_enabled:

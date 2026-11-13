@@ -2,11 +2,12 @@
 # The worker package lives next door in ../worker and is pure Python. The "llm" extra adds the Anthropic
 # SDK for the optional rebalance reviewer; it stays unused unless TB_LLM_ENABLED=true and a key are set.
 # The "ai" extra adds numpy, which only the AI desk's training job imports.
+# The "secrets" extra adds cryptography, which decrypts the keys saved from the dashboard's setup screen.
 [project]
 name = "thunderbot-functions"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["thunderbot[llm,ai]"]
+dependencies = ["thunderbot[llm,ai,secrets]"]
 
 [tool.uv.sources]
 thunderbot = { path = "../worker" }

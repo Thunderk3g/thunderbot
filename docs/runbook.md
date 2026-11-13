@@ -14,19 +14,51 @@ engine apply each change. Everything runs on synthetic data, so nothing here mea
 1. On groww.in/trade-api/api-keys create a **TOTP** key. You get two things: the **API key** (a long
    `eyJ...` token) and a **TOTP secret** (base32: capital letters A-Z and digits 2-7, the text
    under the QR code). Thunderbot needs both.
-2. Put them in `worker/.env` locally (gitignored, loaded automatically) or `/etc/thunderbot.env`
-   on the VPS (`chmod 600`). Never commit them or paste them into chats or tickets.
-   ```
-   GROWW_API_KEY=eyJ...
-   GROWW_TOTP_SECRET=ABCDEFGHIJKLMNOP
-   ```
-3. Run `thunderbot login-check`. It logs in, fetches your profile, and probes the live-data plan.
-   It never places orders and prints neither the token nor account details. It tells you plainly
-   if the secret isn't a TOTP secret or the key type doesn't match.
+2. Give them to Thunderbot one of two ways. Never commit them or paste them into chats or tickets.
+   - **The dashboard's Setup screen.** Paste both and press Save. They are encrypted before they are
+     stored (see "Keys saved from the dashboard" below) and the worker reads them on its next pass.
+   - **The worker's environment.** Put them in `worker/.env` locally (gitignored, loaded automatically)
+     or `/etc/thunderbot.env` on the VPS (`chmod 600`):
+     ```
+     GROWW_API_KEY=eyJ...
+     GROWW_TOTP_SECRET=ABCDEFGHIJKLMNOP
+     ```
+   A key saved in the dashboard wins over one in the environment.
+3. Check them. Setup's **Check** button and `thunderbot login-check` run the same read-only steps: the
+   key's type, the login, your profile, the live-data plan, and this machine's public IP against
+   `TB_EXPECTED_STATIC_IP`. Nothing is ordered, and neither the token nor account details are shown.
+   It tells you plainly if the secret isn't a TOTP secret or the key type doesn't match. The check
+   runs where the worker runs: on a serverless worker it stops at "SDK not installed", because that
+   worker cannot place orders and does not carry the Groww SDK. Run it on the static-IP machine.
 4. For orders, also whitelist the VPS's static IP on the same page and set `TB_EXPECTED_STATIC_IP`.
+   This, `TB_LIVE_TRADING_ENABLED` and `TB_ALLOW_MTF_API` are read from the worker's environment
+   only. Nothing saved in the dashboard can switch on real orders.
 
 If a key or secret is ever exposed, delete it on the API keys page and create a new one. TOTP
 keys don't expire on their own.
+
+## Keys saved from the dashboard
+
+The Setup screen takes two things: an LLM key (Anthropic, xAI Grok, Groq, OpenAI, Gemini, OpenRouter,
+or any OpenAI-compatible server) and the Groww credentials. Each is checked before it is saved: the
+LLM key by listing the provider's models and making one tiny call with the model you pick, the Groww
+key by the read-only check above.
+
+- **Where they live.** In the `secrets` table, encrypted with AES-256-GCM. The table holds
+  ciphertext, a masked hint such as `sk-…a1b2`, and the provider and model names. The dashboard never
+  sends a saved key back to the browser.
+- **The encryption key.** Set the same `TB_SECRET_KEY` on the dashboard and on every worker (any long
+  random string). When it is unset, both sides use the database key they already share, which works
+  until that key is rotated; after a rotation, save the keys again.
+- **What the worker needs.** The `cryptography` package (`pip install -e "worker[all]"` includes it;
+  the Vercel function gets it from `dashboard/pyproject.toml`). Without it, saved keys are ignored
+  with one warning and environment keys keep working.
+- **Precedence.** A saved key wins over the environment. `TB_LLM_ENABLED=false` in the worker's
+  environment switches every LLM role off whichever key is present. A long-running worker
+  (`thunderbot paper`, `live`, `invest`) reads saved keys when it starts; the serverless worker and
+  the AI desk read them on every pass.
+- **One install, one person.** The table has one row per key name. This is not a way to hold other
+  people's broker credentials.
 
 ## Stage 1 - Backtest (local)
 
@@ -75,7 +107,8 @@ Groww's intraday history depth is disputed (3 months vs. "from 2020").
    `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `DASHBOARD_USER` and `DASHBOARD_PASSWORD`. Never
    use a `NEXT_PUBLIC_` prefix for the service key.
 6. Check the NSE holiday list (`worker/thunderbot/universes/nse_holidays.txt`, also copied to `worker/deploy/`) each December and add the new year.
-7. Optional: set `TB_LLM_ENABLED=true` and `ANTHROPIC_API_KEY` to start collecting LLM decisions.
+7. Optional: connect an LLM on the dashboard's Setup screen (or set `TB_LLM_ENABLED=true` and
+   `ANTHROPIC_API_KEY`, or the three `LLM_*` variables) to start collecting LLM decisions.
 
 Exit criterion: paper results within reasonable distance of the backtest, no `exit_failed`,
 `stop_failed` or repeated `error` events, the kill switch tested at least once, and (if the LLM

@@ -215,7 +215,7 @@ class TestLocalAPI:
     def test_auth_required(self, server):
         base, _ = server
         assert self.call(base, "GET", "/rest/v1/trades", key="wrong")[0] == 401
-        assert self.call(base, "GET", "/rest/v1/secrets")[0] == 404
+        assert self.call(base, "GET", "/rest/v1/passwords")[0] == 404
 
     def test_postgrest_subset(self, server):
         base, store = server

@@ -104,9 +104,9 @@ class ClaudeRebalanceReviewer:
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
         self.s = settings
         if client is None:
-            import anthropic
+            from .provider import anthropic_client
 
-            client = anthropic.Anthropic(timeout=settings.llm_timeout_seconds, max_retries=2)
+            client = anthropic_client(settings)
         self.client = client
         self._output_model = _output_model()
 
@@ -174,14 +174,69 @@ def _output_model():
     return RebalanceReview
 
 
-def build_rebalance_reviewer(settings: Settings) -> ClaudeRebalanceReviewer | None:
-    """Claude when TB_LLM_ENABLED and the SDK and a key are present; otherwise no reviewer."""
+JSON_REPLY = """
+
+Reply with one JSON object and nothing else:
+{"decision": "approve" or "postpone", "confidence": 0.0 to 1.0,
+ "rationale": "two to four plain sentences", "risk_flags": ["short_snake_case_tags"]}
+"""
+
+
+class ChatRebalanceReviewer:
+    """The same review through any OpenAI-compatible chat endpoint (xAI Grok, Groq, OpenAI, Gemini,
+    OpenRouter, a local server). Same prompt, same contract: approve or postpone, and a reviewer that
+    cannot answer approves, because the mechanical rule is the system and the review is an extra."""
+
+    def __init__(self, settings: Settings, client: Any | None = None) -> None:
+        from .trader import ChatClient
+
+        self.s = settings
+        self.client = client or ChatClient(settings.llm_api_key or "", settings.llm_base_url or "",
+                                           settings.llm_chat_model or "", timeout=min(settings.llm_timeout_seconds, 45.0))
+
+    @property
+    def label(self) -> str:
+        return self.client.model
+
+    def review(self, ctx: RebalanceContext) -> RebalanceVerdict:
+        from .trader import extract_json
+
+        prompt = build_user_message(ctx)
+        model = self.client.model
+        started = time.monotonic()
+        try:
+            text, raw = self.client.complete(SYSTEM_PROMPT + JSON_REPLY, prompt)
+            out = extract_json(text)
+            decision = str(out.get("decision", "")).strip().lower()
+            if decision not in ("approve", "postpone"):
+                raise ValueError(f"decision must be approve or postpone, got {decision!r}")
+            flags = out.get("risk_flags") or []
+            flags = [str(x).strip() for x in (flags if isinstance(flags, list) else [flags]) if str(x).strip()][:10]
+            confidence = min(max(float(out.get("confidence", 0.5)), 0.0), 1.0)
+            rationale = str(out.get("rationale", "")).strip() or "(no rationale given)"
+        except Exception as e:
+            log.warning("rebalance review failed: %s", e)
+            return RebalanceVerdict.failed(f"{type(e).__name__}: {e}"[:300], model, prompt)
+        usage = raw.get("usage") or {}
+        return RebalanceVerdict(
+            approve=decision == "approve", confidence=confidence, rationale=rationale[:1200], risk_flags=flags,
+            model=str(raw.get("model") or model), latency_ms=int((time.monotonic() - started) * 1000),
+            input_tokens=int(usage.get("prompt_tokens") or 0), output_tokens=int(usage.get("completion_tokens") or 0),
+            prompt=prompt,
+        )
+
+
+def build_rebalance_reviewer(settings: Settings) -> ClaudeRebalanceReviewer | ChatRebalanceReviewer | None:
+    """The configured LLM when it is enabled: an OpenAI-compatible endpoint, or Claude when an Anthropic
+    credential and the SDK are present. Otherwise no reviewer."""
     import os
 
     if not settings.llm_enabled:
         return None
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        log.warning("TB_LLM_ENABLED is set but no Anthropic credential is configured; rebalance review is off")
+    if settings.chat_llm:
+        return ChatRebalanceReviewer(settings)
+    if not (settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        log.warning("the LLM is enabled but no key is configured; rebalance review is off")
         return None
     try:
         return ClaudeRebalanceReviewer(settings)

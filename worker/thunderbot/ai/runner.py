@@ -68,7 +68,11 @@ class IntradayRunner:
     # Settings and state
 
     def _settings(self, control: dict[str, Any]) -> Settings:
-        s, _ = self.base.with_overrides(control.get("settings_overrides") or {})
+        from ..credentials import apply_credentials
+
+        # Keys saved in the dashboard first, then its overrides; read on every call so a new key is used
+        # from the next bar.
+        s, _ = apply_credentials(self.base, self.store).with_overrides(control.get("settings_overrides") or {})
         return dataclasses.replace(s, symbols=list(s.ai_symbols), strategy="ai", strategy_params={})
 
     def _new_state(self, day: str) -> dict[str, Any]:
