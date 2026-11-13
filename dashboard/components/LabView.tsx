@@ -29,8 +29,9 @@ function sweepValues(p: ParamSpec, center: number): string {
   return [...new Set(vals)].join(", ");
 }
 
-export default function LabView({ control, onApplied, onUsed }: { control?: Control; onApplied: () => void; onUsed?: () => void }) {
-  const [mode, setMode] = useState<"invest" | "intraday">("invest");
+export default function LabView({ control, onApplied, onUsed, only }: { control?: Control; onApplied: () => void; onUsed?: () => void; only?: "invest" | "intraday" }) {
+  const [picked, setMode] = useState<"invest" | "intraday">("invest");
+  const mode = only ?? picked;
   const [investJob, setInvestJob] = useState<string | null>(null);
   const [stage, setStage] = useState<"choose" | "test" | "use">("choose");
   if (mode === "invest") {
@@ -41,7 +42,7 @@ export default function LabView({ control, onApplied, onUsed }: { control?: Cont
     };
     return (
       <div className="page">
-        <LabHeader mode={mode} setMode={setMode} />
+        <LabHeader mode={mode} setMode={setMode} only={only} />
         <ol className="trail" aria-label="Steps">
           <li className={stage !== "choose" ? "done" : ""} aria-current={stage === "choose" ? "step" : undefined}>Choose a plan</li>
           <li className={stage === "use" ? "done" : ""} aria-current={stage === "test" ? "step" : undefined}>Test it on past years</li>
@@ -59,10 +60,13 @@ export default function LabView({ control, onApplied, onUsed }: { control?: Cont
       </div>
     );
   }
-  return <IntradayLab control={control} onApplied={onApplied} mode={mode} setMode={setMode} />;
+  return <IntradayLab control={control} onApplied={onApplied} mode={mode} setMode={setMode} only={only} />;
 }
 
-function LabHeader({ mode, setMode }: { mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void }) {
+function LabHeader({ mode, setMode, only }: { mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void; only?: "invest" | "intraday" }) {
+  if (only === "intraday") {
+    return <p className="lede" style={{ marginTop: 0 }}>Test an intraday rule on past prices with the same code that trades. Every result is marked down for how many settings have been tried.</p>;
+  }
   return (
     <div className="page-head">
       <div>
@@ -73,12 +77,12 @@ function LabHeader({ mode, setMode }: { mode: "invest" | "intraday"; setMode: (m
             : "Test an intraday strategy on past prices with the same code that trades. These strategies lost money in our tests; this room is for research, not income."}
         </p>
       </div>
-      <ModeSwitch value={mode} onChange={setMode} />
+      {!only && <ModeSwitch value={mode} onChange={setMode} />}
     </div>
   );
 }
 
-function IntradayLab({ control, onApplied, mode, setMode }: { control?: Control; onApplied: () => void; mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void }) {
+function IntradayLab({ control, onApplied, mode, setMode, only }: { control?: Control; onApplied: () => void; mode: "invest" | "intraday"; setMode: (m: "invest" | "intraday") => void; only?: "invest" | "intraday" }) {
   const catalog = control?.strategy_catalog ?? [];
   const eff = control?.effective_settings;
   const [kind, setKind] = useState<Kind>("backtest");
@@ -132,7 +136,7 @@ function IntradayLab({ control, onApplied, mode, setMode }: { control?: Control;
   if (!catalog.length) {
     return (
       <div className="page">
-        <LabHeader mode={mode} setMode={setMode} />
+        <LabHeader mode={mode} setMode={setMode} only={only} />
         <Empty title="The strategy list hasn't loaded.">It's published by the worker. Start <code>thunderbot serve</code> locally, or <code>thunderbot jobs</code> on the server.</Empty>
       </div>
     );
@@ -140,7 +144,7 @@ function IntradayLab({ control, onApplied, mode, setMode }: { control?: Control;
 
   return (
     <div className="page">
-      <LabHeader mode={mode} setMode={setMode} />
+      <LabHeader mode={mode} setMode={setMode} only={only} />
       <div className="split form">
         <div>
           <Panel>
@@ -310,13 +314,19 @@ function BacktestView({ r, onApply }: { r: BacktestResult; onApply: (sp: Record<
   );
 }
 
+/** A setting clears the bar only if its Sharpe is still likely above zero after every setting ever tried
+ *  on this data is counted (deflated Sharpe of 0.95 or more). Older results fall back to their own flag. */
+const clears = (row: SweepRow) => (row.dsr !== undefined && row.dsr !== null ? row.dsr >= 0.95 : !!row.robust);
+
 function SweepView({ r, onApply }: { r: SweepResult; onApply: (sp: Record<string, number>) => Promise<void> }) {
   const [applied, setApplied] = useState<number | null>(null);
   const [confirming, setConfirming] = useState<number | null>(null);
   const names = r.axes.map((a) => a.name);
+  const deflated = r.rows.some((row) => row.dsr !== undefined && row.dsr !== null);
+  const passed = r.rows.filter(clears).length;
   const choose = async (i: number, row: SweepRow) => {
     // A setting that only won on the history it was picked from is usually overfit: make that a deliberate choice.
-    if (!row.robust && confirming !== i) return setConfirming(i);
+    if (!clears(row) && confirming !== i) return setConfirming(i);
     await onApply(row.params);
     setApplied(i);
     setConfirming(null);
@@ -325,34 +335,39 @@ function SweepView({ r, onApply }: { r: SweepResult; onApply: (sp: Record<string
     <motion.div className="page" style={{ gap: 28 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       <div>
         <p className="hero-line" style={{ marginTop: 0, fontSize: 21, color: "var(--ink)" }}>
-          {r.robust_count
-            ? <>{r.robust_count} of {r.rows.length} settings held up on prices they hadn&apos;t seen.</>
-            : <>None of the {r.rows.length} settings held up on prices they hadn&apos;t seen.</>}
+          {r.verdict ?? (passed
+            ? `${passed} of ${r.rows.length} settings held up on prices they hadn't seen.`
+            : `None of the ${r.rows.length} settings held up on prices they hadn't seen.`)}
         </p>
-        <p className="small soft" style={{ marginTop: 6, maxWidth: "70ch" }}>
-          Ranked by results before {r.split_date}; the &ldquo;after&rdquo; columns are the honest test. Held up means profitable both before and after, with 20 or more trades after and a profit factor of at least 1.1. {r.data_note}
+        <p className="small soft" style={{ marginTop: 6, maxWidth: "74ch" }}>
+          {deflated
+            ? <>Try enough settings and one will look good by luck. {r.trials ? <><b>{r.trials} settings</b> have now been tried on this data, across every sweep, and each result below is marked down for all of them. </> : null}
+              &ldquo;Deflated&rdquo; is the chance a setting&apos;s Sharpe is really above zero after that; 95% is the bar.
+              {r.pbo !== undefined && r.pbo !== null ? <> Across {r.blocks ?? "the"} blocks of days, the setting that looked best on one half finished in the bottom half on the other <b>{Math.round(r.pbo * 100)}%</b> of the time; near 50% means the ranking is noise.</> : null}</>
+            : <>Ranked by results before {r.split_date}; the &ldquo;after&rdquo; columns are the honest test.</>} {r.data_note}
         </p>
       </div>
       <div className="table-wrap"><table>
         <thead><tr>
           {names.map((n) => <th key={n} className="num">{n.replaceAll("_", " ")}</th>)}
-          <th className="num">Before</th><th className="num">PF</th><th className="num">Trades</th><th className="num">After</th><th className="num">PF</th><th className="num">Trades</th><th></th><th></th>
+          <th className="num">Before</th><th className="num">Trades</th><th className="num">After</th><th className="num">Trades</th>
+          {deflated && <><th className="num">Sharpe</th><th className="num">Deflated</th></>}<th></th><th></th>
         </tr></thead>
         <tbody>
           {r.rows.map((row, i) => (
-            <motion.tr key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: Math.min(i * 0.02, 0.5), ...spring }} className={row.robust ? "top" : ""}>
+            <motion.tr key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: Math.min(i * 0.02, 0.5), ...spring }} className={clears(row) ? "top" : ""}>
               {names.map((n) => <td key={n} className="num">{num(row.params[n])}</td>)}
               <td className={`num ${tone(Number(row.in_sample.net_pnl))}`}>{signedInr(row.in_sample.net_pnl)}</td>
-              <td className="num">{num(row.in_sample.profit_factor)}</td>
               <td className="num">{row.in_sample.trades}</td>
               <td className={`num ${tone(Number(row.out_of_sample.net_pnl))}`}>{signedInr(row.out_of_sample.net_pnl)}</td>
-              <td className="num">{num(row.out_of_sample.profit_factor)}</td>
               <td className="num">{row.out_of_sample.trades}</td>
-              <td className="gain small">{row.robust ? "held up" : ""}</td>
+              {deflated && <><td className="num">{row.sharpe === null || row.sharpe === undefined ? "–" : num(row.sharpe)}</td>
+                <td className="num">{row.dsr === null || row.dsr === undefined ? "–" : `${Math.round(row.dsr * 100)}%`}</td></>}
+              <td className="gain small">{clears(row) ? "clears the bar" : ""}</td>
               <td style={{ textAlign: "right" }}>
                 <Button size="sm" variant={applied === i ? "primary" : confirming === i ? "stop" : ""} onClick={() => choose(i, row)}
-                  title={row.robust ? "Trade with these settings" : "These settings didn't hold up on unseen prices"}>
-                  {applied === i ? "In use" : confirming === i ? "Didn't hold up. Use anyway?" : "Use"}
+                  title={clears(row) ? "Trade with these settings" : "These settings did not clear the bar"}>
+                  {applied === i ? "In use" : confirming === i ? "Below the bar. Use anyway?" : "Use"}
                 </Button>
               </td>
             </motion.tr>

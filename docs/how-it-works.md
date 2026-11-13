@@ -5,6 +5,8 @@ reading the code. File names are given so you can check each claim.
 
 ## Two bots share one dashboard
 
+The investing bot is the **Portfolio** page. The intraday desk is a room inside the **Lab**, which is paper only.
+
 | | The investing bot | The AI desk |
 |---|---|---|
 | What it trades | A few ETFs: Nifty 50, Next 50, gold, a liquid fund | 24 liquid Nifty 50 stocks, intraday only |
@@ -13,8 +15,15 @@ reading the code. File names are given so you can check each claim.
 | What the evidence says | The plain fixed mix beat every timing rule after tax | No edge found; it loses about a quarter of its risk per trade |
 | Why it exists | This is the part meant to hold money | To keep testing, on paper, whether an edge ever appears |
 
-Both are **paper trading** unless you set up a machine with a registered static IP and turn on three
-separate switches. Nothing on the dashboard can turn on real orders.
+Orders can reach the market three ways, chosen on the Setup page:
+
+| Mode | What happens | What it needs |
+|---|---|---|
+| **Paper** | Fills are simulated at live prices with charges taken off | Nothing |
+| **Guided basket** | The bot works out whole-share limit orders and lists them; you place them in the Groww app and tick them off; it then checks your holdings against the list | Your own two hands. No fixed IP |
+| **Automated** | The bot places the orders | A machine on a static IP registered with Groww, with the live switch set there |
+
+Nothing on the dashboard can turn on automated orders. The intraday desk is always paper.
 
 ## What wakes it
 
@@ -35,11 +44,26 @@ database, does one pass, writes everything back and exits. If a call is missed, 
    by one day** if something looks broken (a 90% one-day fall is a unit split, not a crash). It cannot
    change an order, and after two postponements the rule runs anyway. It is told not to forecast.
 6. **Orders.** Sell what is over target, then buy what is under, in whole shares. On paper these fill at
-   the live price with slippage and Groww's charges taken off. The dashboard lists them so you can
-   place the same orders by hand in the Groww app.
+   the live price with slippage and Groww's charges taken off. In guided mode they are listed as a
+   basket for you to place by hand.
 7. **Journal.** Orders, trades, the plan and the portfolio's value are written to the database.
 
 (`worker/thunderbot/invest.py`, plans in `daily.py`, reviewer in `llm/rebalance.py`)
+
+### What it does between rebalances
+
+- **Drift corridors.** Each holding may wander five points from its target, or a fifth of the target if
+  that is tighter, before anything is sold. The Portfolio page draws this for every holding.
+- **New money.** A deposit is used to buy whatever is furthest below its target. Nothing is sold, so no
+  tax is realised, and most months that is enough to keep everything inside its corridor.
+- **Your actual holdings.** It reads what you hold from Groww, or from a list you type in. Anything the
+  plan does not cover is counted and never sold.
+- **The tax year.** It tracks how much of the year's ₹1.25 lakh tax-free allowance on long-term equity
+  gains is used and proposes booking gains up to the rest before 31 March. A sale and rebuy of the same
+  fund on one day counts as intraday and books nothing, so the rebuy waits a session, or the money goes
+  into a twin fund. Check this with a chartered accountant before doing it with real money.
+- **Stopping.** Pause, stop and the kill switch all mean "trade nothing". None of them sells. Selling
+  everything is a separate button that tells you what it books first.
 
 ### The plans
 
@@ -74,9 +98,11 @@ Every five minutes, for each stock:
    move, time of day) and estimate the chance the trade ends in profit after costs. Low scores are
    skipped but still followed.
 4. **The LLM takes or skips.** It sees the setup, the score, how setups scored like this did before,
-   the market so far today, the last hour of bars, the account's day, and a few "lessons" it wrote
-   after earlier sessions. It answers take or skip and a size from 0 to 1. It cannot set a price, raise
-   the size above normal, or create a trade. If the call fails, the trade is skipped.
+   the market so far today, the last hour of bars and the account's day. It answers take or skip and a
+   size from 0 to 1. It cannot set a price, raise the size above normal, or create a trade. If the call
+   fails, the trade is skipped. **Until its record shows it helps, it is only watching:** its answer is
+   written down and scored, and the desk trades as if it had said "take" (see "How a model earns
+   authority" below).
 5. **Risk limits have the last word.** Size comes from risking a fixed share of capital (0.5% by
    default) on the distance to the stop. Then the caps: positions open, trades per day, position size,
    the daily loss limit, the entry window.
@@ -84,8 +110,10 @@ Every five minutes, for each stock:
    bar touched both stop and target; everything closed from 15:05.
 7. **Every setup is followed to the end**, taken or not. That is how the desk can say what each skip
    was worth and whether the LLM's vetoes were right.
-8. **After the close** the day is recorded, the LLM writes a short review and up to four lessons, and
-   the model is retrained overnight on the latest 60 days.
+8. **After the close** the day is recorded, the LLM writes a short review and up to four lessons for
+   you to read, and the scoring model is retrained overnight on the latest 60 days. The lessons are not
+   fed back into the next day's prompt unless the harness is edited to do so: one day is noise, and a
+   prompt that rewrites itself overnight cannot be compared with yesterday's.
 
 (`worker/thunderbot/ai/runner.py`, `strategy/ai.py`, `ai/gbm.py`, `llm/trader.py`, `risk.py`)
 
@@ -99,6 +127,35 @@ rule set ──► model score ──► LLM: take / skip / smaller ──► ri
 
 Each stage can only remove or shrink. Nothing downstream of the rule set can move a price, and nothing
 downstream of the risk limits exists.
+
+## How a model earns authority
+
+Comparing "trades it approved" with "trades it vetoed" is misleading: a model that skips mildly good
+setups and keeps very good ones looks clever while throwing money away. So each answer is scored
+against the same setup with the model left out:
+
+```
+effect of the model on one setup = (size it asked for − 1) × what the setup made, after charges − the cost of the call
+```
+
+Skipping a loser scores positive, skipping a winner scores negative, and leaving a setup alone scores
+slightly negative because the call cost something. The Lab draws, for each role, the range the true
+average effect is in. The range is built so that it stays valid however often you look at it, which
+ordinary significance tests are not.
+
+- A role starts **watching only**: asked, recorded, scored, not obeyed.
+- It gets **authority** when it has been checked at least 100 times and the whole range is above zero.
+- It goes back to watching if the whole range falls below zero, or its running total drops below −5R.
+
+The role that checks a rebalance can only hold it for a day and is not scored this way.
+
+## The harness
+
+Everything that shapes a decision and is not the engine lives in plain files: your limits (`policy`),
+the plan and its settings (`plans/`), each model role's purpose and prompt (`roles/`), and the tests a
+role must pass (`gates`). The engine checks every value against ceilings in its own code and refuses a
+harness that breaks them. The whole bundle has a short id, stamped on every decision, so the journal can
+tell which rules made which decision. See [`harness.md`](harness.md).
 
 ## What the words on the dashboard mean
 
@@ -134,10 +191,13 @@ downstream of the risk limits exists.
 
 | To change | Go to |
 |---|---|
-| Which plan runs, its parameters | Dashboard → Plans |
+| Which plan runs, its parameters | Dashboard → Portfolio → Plan |
+| How orders are placed (paper, guided, automated) | Dashboard → Setup → Orders |
+| What you already hold | Dashboard → Setup → Your holdings |
 | Risk per trade, daily loss limit, position caps | Dashboard → Setup → Desk limits |
 | Which LLM is used | Dashboard → Setup → LLM (or `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` where the worker runs) |
 | The Groww key | Dashboard → Setup → Groww (real orders still need the switches on your own machine) |
-| What the LLM is told | `TRADER_PROMPT` in `llm/trader.py`, `SYSTEM_PROMPT` in `llm/rebalance.py` |
+| What the LLM is told | The role's `.md` file in the harness (see `docs/harness.md`) |
+| Whether lessons are fed back to the model | `memory_mode` in the harness policy |
 | A new intraday rule set | A class in `worker/thunderbot/strategy/`, added to `make_generators` in `strategy/ai.py` |
 | A new daily plan | A class in `daily.py` with a `target()` method, added to `DAILY_CATALOG` |

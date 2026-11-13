@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Line, type Gate, type LineEnd } from "./Line";
+import { DecisionTrace, type Gate, type TraceEnd } from "./DecisionTrace";
 
-type Go = (page: "today" | "desk" | "lab" | "results" | "log" | "settings") => void;
+type Go = (to: string) => void;
 
 /** The same setup under four outcomes, to show what each gate can and cannot do. */
-const CASES: { id: string; button: string; gates: Gate[]; end: LineEnd; says: string }[] = [
+const CASES: { id: string; button: string; gates: Gate[]; end: TraceEnd; says: string }[] = [
   {
     id: "whole", button: "Taken whole",
     gates: [
@@ -21,11 +21,31 @@ const CASES: { id: string; button: string; gates: Gate[]; end: LineEnd; says: st
     id: "thin", button: "Shrunk by the LLM",
     gates: [
       { key: "model", label: "Model", state: "pass", value: "scored 44%" },
-      { key: "llm", label: "LLM", state: "thin", size: 0.5, value: "cut to 50%" },
+      { key: "llm", label: "LLM", state: "thin", size: 0.5, value: "asked for less" },
       { key: "limits", label: "Limits", state: "pass", value: "19 shares" },
     ],
     end: { label: "Order", value: "19 shares, with a stop" },
-    says: "The LLM liked the setup but named a concern, so it asked for half size. The line carries on thinner. It could have asked for less; it cannot ask for more than normal size.",
+    says: "The LLM liked the setup but named a concern, so it asked for half size. The faint channel is full size; the core inside it now fills half. It could have asked for less; it cannot ask for more than full size.",
+  },
+  {
+    id: "nomodel", button: "No model fitted",
+    gates: [
+      { key: "model", label: "Model", state: "pass", value: "scored 46%" },
+      { key: "llm", label: "LLM", state: "absent", value: "no model fitted" },
+      { key: "limits", label: "Limits", state: "pass", value: "38 shares" },
+    ],
+    end: { label: "Order", value: "38 shares, with a stop" },
+    says: "An LLM is optional. With none connected, the line runs straight through the empty socket: the conductor is never broken unless a trade was actually stopped.",
+  },
+  {
+    id: "held", button: "Held for a day",
+    gates: [
+      { key: "due", label: "Decision day", state: "pass", value: "month-end" },
+      { key: "prices", label: "Price check", state: "pass", value: "prices looked right" },
+      { key: "llm", label: "LLM check", state: "defer", value: "held for a session" },
+    ],
+    end: { label: "Orders", value: "decided again tomorrow" },
+    says: "This one is a daily portfolio check. The LLM saw a price that looked like a data error and held the rebalance for one session. It cannot change an order, and after two holds the rule runs regardless.",
   },
   {
     id: "model", button: "Stopped by the model",
@@ -64,12 +84,16 @@ const WORDS: [string, string][] = [
   ["Learning and Strict", "Learning trades the best-scored 30% of setups to build a record. Strict trades only what the model expects to profit, which so far is nothing."],
   ["No-timing twin", "The same ETFs held in equal parts with no rule. If a rule cannot beat it, the rule is adding nothing."],
   ["Paper", "Orders that are simulated at live prices with real charges taken off. No money moves."],
+  ["Guided basket", "Real money, placed by you. The bot works out the orders and lists them; you place them in your broker's app. It needs no fixed IP address."],
+  ["Drift band", "How far a holding may wander from its target before anything is sold: five points, or a fifth of the target if that is tighter."],
+  ["Watching only", "A model role that is asked and recorded but not obeyed, until its record shows it helps."],
+  ["Harness", "Everything that shapes a decision and is not the engine: your limits, the plan, each model role's prompt, and the tests a role must pass."],
 ];
 
 export default function GuideView({ go }: { go?: Go }) {
   const [which, setWhich] = useState("whole");
   const c = CASES.find((x) => x.id === which) ?? CASES[0];
-  const link = (page: Parameters<Go>[0], text: string) => (
+  const link = (page: string, text: string) => (
     <button type="button" onClick={() => go?.(page)} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>{text}</button>
   );
   return (
@@ -82,13 +106,13 @@ export default function GuideView({ go }: { go?: Go }) {
       <section>
         <h2>One picture explains most of it</h2>
         <div className="prose">
-          <p>Every decision is a line that runs from a rule to an order. On the way it passes through gates. A gate can leave the line whole, thin it, or open and break it. No gate can make it thicker, move a price or invent a trade.</p>
+          <p>Every decision is a line that runs from a rule to an order. On the way it passes through gates. A gate can leave the line whole, narrow it, hold it for a day, or open and break it. No gate can widen it, move a price or invent a trade. If an order passes, the line is never broken.</p>
         </div>
         <div className="providers" role="group" aria-label="Show an outcome" style={{ marginTop: 18 }}>
           {CASES.map((x) => <button key={x.id} type="button" aria-pressed={x.id === which} onClick={() => setWhich(x.id)}>{x.button}</button>)}
         </div>
         <div className="stage">
-          <Line size="lg" source={{ label: "Rule", value: "Opening-range breakout" }} gates={c.gates} end={c.end} label={`Example: ${c.button}`} />
+          <DecisionTrace size="lg" source={{ label: c.id === "held" ? "Plan" : "Rule", value: c.id === "held" ? "Trend rotation" : "Opening-range breakout" }} gates={c.gates} end={c.end} label={`Example: ${c.button}`} />
         </div>
         <p className="lede" style={{ fontSize: 16.5, marginTop: 6 }} aria-live="polite">{c.says}</p>
       </section>
@@ -98,7 +122,7 @@ export default function GuideView({ go }: { go?: Go }) {
         <div className="twobots">
           <div>
             <h3>The investing bot</h3>
-            <p className="soft">This is the part meant to hold money. It lives on {link("today", "Home")} and {link("lab", "Plans")}.</p>
+            <p className="soft">This is the part meant to hold money. It lives on {link("/", "Portfolio")}.</p>
             <dl>
               <dt>Trades</dt><dd>A few ETFs: Nifty 50, Next 50, gold, a liquid fund</dd>
               <dt>Decides</dt><dd>Once a day at 15:10; trades a few times a year</dd>
@@ -108,7 +132,7 @@ export default function GuideView({ go }: { go?: Go }) {
           </div>
           <div>
             <h3>The desk</h3>
-            <p className="soft">This exists to keep testing, on paper, whether an edge ever appears. It lives on {link("desk", "Desk")}.</p>
+            <p className="soft">This exists to keep testing, on paper, whether an edge ever appears. It lives in the {link("/lab/desk", "Lab")}.</p>
             <dl>
               <dt>Trades</dt><dd>24 liquid Nifty 50 stocks, intraday only</dd>
               <dt>Decides</dt><dd>Every five minutes, 09:30 to 14:30; flat by 15:05</dd>
@@ -127,8 +151,8 @@ export default function GuideView({ go }: { go?: Go }) {
           <li><div><b>The plan gives target shares.</b><p>For example a third each in three ETFs, or &quot;hold each ETF only while it is above its 200-day average&quot;.</p></div></li>
           <li><div><b>The prices are checked.</b><p>A price that is missing, stale or has jumped oddly stops the run for the day.</p></div></li>
           <li><div><b>An LLM may look the orders over.</b><p>It can postpone by one day if something looks broken, such as a 90% one-day fall that is really a unit split. It cannot change an order, it is told not to forecast, and after two postponements the rule runs anyway.</p></div></li>
-          <li><div><b>Orders go out.</b><p>Sells first, then buys, in whole shares. On paper they fill at the live price with charges taken off, and Home lists them so you can place the same ones by hand in Groww.</p></div></li>
-          <li><div><b>Everything is written down.</b><p>Orders, the plan and the portfolio&apos;s value go to the {link("log", "Journal")}.</p></div></li>
+          <li><div><b>Orders go out.</b><p>Sells first, then buys, in whole shares. On paper they fill at the live price with charges taken off. In guided mode they are listed for you to place by hand in Groww, and your holdings are checked against the list afterwards.</p></div></li>
+          <li><div><b>Everything is written down.</b><p>Orders, the plan and the portfolio&apos;s value go to the {link("/journal", "Journal")}.</p></div></li>
         </ol>
       </section>
 
@@ -141,7 +165,7 @@ export default function GuideView({ go }: { go?: Go }) {
           <li><div><b>The LLM takes or skips.</b><p>It sees the setup, the score, the market so far today and the account&apos;s day. It answers take or skip and a size from 0 to 1. If the call fails, the trade is skipped.</p></div></li>
           <li><div><b>The limits have the last word.</b><p>Size comes from risking a fixed share of capital on the distance to the stop. Then the caps: positions open, trades per day, the daily loss limit, the entry window.</p></div></li>
           <li><div><b>It is filled and managed on paper.</b><p>Stop first if a bar touched both stop and target. Everything is closed from 15:05.</p></div></li>
-          <li><div><b>After the close it reviews the day.</b><p>The LLM writes a short review and a few lessons, and the model is retrained overnight on the latest 60 days.</p></div></li>
+          <li><div><b>After the close it reviews the day.</b><p>The LLM writes a short review and a few lessons for you to read. They are not fed back into its next prompt unless the harness says so. The scoring model is retrained overnight on the latest 60 days.</p></div></li>
         </ol>
         <p className="small soft" style={{ marginTop: 12, maxWidth: "66ch" }}>Anything you see in italic serif on the Desk was written by the LLM. Everything else was written by rules.</p>
       </section>
@@ -156,7 +180,7 @@ export default function GuideView({ go }: { go?: Go }) {
       <section>
         <h2>What it can and cannot do</h2>
         <div className="prose">
-          <p><b>It cannot place a real order from this dashboard.</b> Brokers accept API orders only from a static IP registered to your account. Real orders are switched on by you, on your own machine. {link("settings", "Setup")} shows what that takes.</p>
+          <p><b>It cannot place a real order from this dashboard.</b> Brokers accept API orders only from a static IP registered to your account. Real orders are switched on by you, on your own machine. {link("/setup", "Setup")} shows what that takes.</p>
           <p><b>It cannot raise its own limits.</b> Each limit has a ceiling in the code that no setting can exceed: 2% risk a trade, 10% daily loss, five times leverage, nine orders a second.</p>
           <p><b>It can show paper results that real trading would not match.</b> Paper fills assume you can always trade at the last price, and free prices can lag.</p>
           <p><b>It can lose money even when everything works.</b> The research behind it found no timing rule that beat holding the ETFs, and no evidence for a profitable retail intraday bot. It is built to show such results plainly before money is at risk.</p>

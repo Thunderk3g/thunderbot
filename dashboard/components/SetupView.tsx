@@ -1,23 +1,25 @@
 "use client";
 
-import { ChevronDown, LoaderCircle } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { dayTime } from "@/lib/format";
+import { LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { dayTime, inr, num } from "@/lib/format";
+import type { PortfolioExtras } from "@/lib/portfolio";
 import type { GrowwCheck, SetupState } from "@/lib/setup";
 import type { Control } from "@/lib/types";
 import { post, wakeWorker } from "@/lib/usePoll";
-import type { SysNode } from "./App";
-import { Line, type Gate } from "./Line";
+import { ModePicker } from "./PortfolioParts";
 import SettingsView from "./SettingsView";
+import { BusStation, type Tap } from "./SystemBus";
 import { Button } from "./ui";
 
-type Go = (page: "lab" | "today" | "guide") => void;
-type StationId = "worker" | "prices" | "llm" | "groww" | "orders";
+type Go = (to: string) => void;
+type Act = (action: string, extra?: Record<string, unknown>) => Promise<void>;
+type StationId = "worker" | "prices" | "llm" | "groww" | "orders" | "holdings";
 
-const STATUS_WORD: Record<SysNode["tone"], string> = { on: "Connected", off: "Not connected", bad: "Needs attention" };
+const STATUS_WORD: Record<Tap["tone"], string> = { on: "Connected", optional: "Optional, not fitted", off: "Not connected", bad: "Needs attention" };
 
-export default function SetupView({ control, setup, setupError, nodes, refresh, go }: {
-  control?: Control; setup: SetupState | null; setupError: string | null; nodes: SysNode[]; refresh: () => void; go?: Go;
+export default function SetupView({ control, setup, setupError, taps, act, refresh, go }: {
+  control?: Control; setup: SetupState | null; setupError: string | null; taps: Tap[]; act: Act; refresh: () => void; go?: Go;
 }) {
   const [open, setOpen] = useState<StationId | null>(null);
   const decided = useRef(false);
@@ -29,13 +31,12 @@ export default function SetupView({ control, setup, setupError, nodes, refresh, 
     setOpen(!setup.llm.configured ? "llm" : !setup.groww.configured ? "groww" : null);
   }, [setup]);
   const toggle = (id: StationId) => { decided.current = true; setOpen(open === id ? null : id); };
-  const byKey = Object.fromEntries(nodes.map((n) => [n.key, n])) as Record<StationId, SysNode>;
-
-  const gates: Gate[] = (["prices", "llm", "groww"] as const).map((k) => ({
-    key: k, label: byKey[k].name, value: byKey[k].note,
-    state: byKey[k].tone === "on" ? "pass" : byKey[k].tone === "bad" ? "cut" : "absent",
-  }));
+  const byKey = Object.fromEntries(taps.map((n) => [n.key, n])) as Record<string, Tap>;
   const hb = control?.heartbeat;
+  const extras = (hb?.portfolio ?? {}) as PortfolioExtras;
+  const status = (k: string) => (byKey[k].tone === "on" ? byKey[k].note : STATUS_WORD[byKey[k].tone]);
+  const holdingsTap: Tap = { key: "holdings", name: "Your holdings", tone: extras.actual?.holdings.length ? "on" : "optional",
+    note: extras.actual?.holdings.length ? `${extras.actual.holdings.length} read ${extras.actual.source === "groww" ? "from Groww" : "from your list"}` : "optional, not fitted" };
 
   return (
     <div className="page">
@@ -44,19 +45,8 @@ export default function SetupView({ control, setup, setupError, nodes, refresh, 
           <h1>Setup</h1>
           <p className="lede">Bring your own keys. Everything here belongs to this copy of Thunderbot and nobody else&apos;s: your scheduler, your LLM, your Groww account.</p>
         </div>
+        <Button onClick={() => go?.("/guide")}>How it works</Button>
       </div>
-
-      <section aria-label="What is connected">
-        <div className="stage" style={{ paddingTop: 0 }}>
-          <Line size="lg" label="What is connected, in order"
-            source={{ label: byKey.worker.name, value: byKey.worker.note }} gates={gates}
-            end={{ label: byKey.orders.name, value: byKey.orders.note }} />
-        </div>
-        <p className="small soft" style={{ maxWidth: "70ch", marginTop: 10 }}>
-          Read it left to right: something wakes the worker, it fetches prices, an LLM may weigh in, a broker may be connected, and orders come out the end.
-          An empty holder means that part is optional and not fitted. A broken switch means it is fitted and failing.
-        </p>
-      </section>
 
       {setupError && !setup && (
         <div className="notice stop"><span className="grow">The setup screen couldn&apos;t load its state: {setupError}.</span></div>
@@ -65,63 +55,114 @@ export default function SetupView({ control, setup, setupError, nodes, refresh, 
         <div className="notice caution"><span className="grow">Keys can&apos;t be saved from this screen yet: {setup.store.problem ?? "no secret key is configured"}. Keys set in the worker&apos;s environment still work.</span></div>
       )}
 
-      <div className="stations">
-        <Station id="worker" node={byKey.worker} open={open} toggle={toggle} blurb="Wakes the worker every few minutes in market hours">
-          <p>{hb?.scheduler === "serverless"
-            ? "Nothing runs all day. A timer in your database calls a small function, which does one pass and exits. If a call is missed, the next one catches up."
-            : hb ? "A long-running worker on your own machine reports in every few seconds." : "Nothing has reported in yet. Wake the worker once; after that the scheduler calls it by itself."}</p>
-          <WakeNow refresh={refresh} />
-          <p className="small soft">Setting up the timer is covered in <code>docs/no-server.md</code>.</p>
-        </Station>
+      <section aria-label="What is connected">
+        <p className="small soft" style={{ maxWidth: "70ch", marginBottom: 14 }}>
+          Each part hangs off the same bar by itself. A solid tap is connected. A dashed tap is an optional part that is not fitted, which is fine. A red tap is fitted and failing.
+        </p>
+        <ul className="bus stations">
+          <BusStation tap={byKey.worker} open={open === "worker"} onToggle={() => toggle("worker")} blurb="Wakes the worker every few minutes in market hours" status={status("worker")}>
+            <p>{hb?.scheduler === "serverless"
+              ? "Nothing runs all day. A timer in your database calls a small function, which does one pass and exits. If a call is missed, the next one catches up."
+              : hb ? "A long-running worker on your own machine reports in every few seconds." : "Nothing has reported in yet. Wake the worker once; after that the scheduler calls it by itself."}</p>
+            <WakeNow refresh={refresh} />
+            <p className="small soft">Setting up the timer is covered in <code>docs/no-server.md</code>.</p>
+          </BusStation>
 
-        <Station id="prices" node={byKey.prices} open={open} toggle={toggle} blurb="Where the bot reads prices from">
-          <p>{hb?.feed?.source === "groww"
-            ? "Prices come from Groww's own feed, using your key."
-            : "Prices come from Yahoo Finance, which is free and can lag the exchange by a few minutes. That is fine for a decision made once a day; it flatters intraday paper results."}</p>
-          {hb?.feed && !hb.feed.ok && <div className="notice stop"><span className="grow">{hb.feed.message}</span></div>}
-          <p className="small soft">With a Groww key connected below, set <code>TB_FEED=groww</code> where the worker runs to use Groww&apos;s prices and history instead.</p>
-        </Station>
+          <BusStation tap={byKey.prices} open={open === "prices"} onToggle={() => toggle("prices")} blurb="Where the bot reads prices from" status={status("prices")}>
+            <p>{hb?.feed?.source === "groww"
+              ? "Prices come from Groww's own feed, using your key."
+              : "Prices come from Yahoo Finance, which is free and can lag the exchange by a few minutes. That is fine for a decision made once a day; it flatters intraday paper results."}</p>
+            {hb?.feed && !hb.feed.ok && <div className="notice stop"><span className="grow">{hb.feed.message}</span></div>}
+            <p className="small soft">With a Groww key connected below, set <code>TB_FEED=groww</code> where the worker runs to use Groww&apos;s prices and history instead.</p>
+          </BusStation>
 
-        <Station id="llm" node={byKey.llm} open={open} toggle={toggle} blurb="Optional. It can skip, shrink or postpone a trade; it can never make one">
-          {setup ? <LlmForm setup={setup} refresh={refresh} /> : <p className="soft">Loading.</p>}
-        </Station>
+          <BusStation tap={byKey.llm} open={open === "llm"} onToggle={() => toggle("llm")} blurb="Optional. It can skip, shrink or hold a trade; it can never make one" status={status("llm")}>
+            {setup ? <LlmForm setup={setup} refresh={refresh} /> : <p className="soft">Loading.</p>}
+          </BusStation>
 
-        <Station id="groww" node={byKey.groww} open={open} toggle={toggle} blurb="Optional. Needed for Groww's prices and, one day, real orders">
-          {setup ? <GrowwForm setup={setup} refresh={refresh} /> : <p className="soft">Loading.</p>}
-        </Station>
+          <BusStation tap={byKey.groww} open={open === "groww"} onToggle={() => toggle("groww")} blurb="Optional. Reads your holdings and Groww's prices; automated orders need more" status={status("groww")}>
+            {setup ? <GrowwForm setup={setup} refresh={refresh} /> : <p className="soft">Loading.</p>}
+          </BusStation>
 
-        <Station id="orders" node={byKey.orders} open={open} toggle={toggle} blurb="On paper until you decide otherwise, on your own machine">
-          <p>Orders are simulated at live prices with Groww&apos;s charges taken off. Real orders are switched on in one place only: the machine whose static IP is registered with Groww. Nothing on this screen can do it, so a stolen dashboard password cannot trade your account.</p>
-          <ul className="steps-list">
-            <li className={setup?.groww.lastCheck?.ok ? "ok" : ""}><span><b>A Groww key that passes its check.</b> <span>{setup?.groww.lastCheck?.ok ? "Done." : "Connect it above."}</span></span></li>
-            <li className={setup?.groww.lastCheck?.ip?.ok ? "ok" : ""}><span><b>That machine&apos;s IP registered with Groww.</b> <span>{setup?.live.staticIp ? `Expected ${setup.live.staticIp}.` : "Set TB_EXPECTED_STATIC_IP there."}</span></span></li>
-            <li className={setup?.live.enabled ? "ok" : ""}><span><b>The live switch, set there.</b> <span><code>TB_LIVE_TRADING_ENABLED=true</code> in that machine&apos;s environment.</span></span></li>
-            <li><span><b>The command, typed by you.</b> <span><code>thunderbot invest --live --i-understand-the-risks</code></span></span></li>
-          </ul>
-          <p className="small soft">Before any of that: the plan should have earned it on paper. The Guide explains what to look for.{" "}
-            <button type="button" onClick={() => go?.("guide")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Open the Guide</button></p>
-        </Station>
-      </div>
+          <BusStation tap={holdingsTap} open={open === "holdings"} onToggle={() => toggle("holdings")} blurb="Optional. What you already own, so the plan starts from the truth" status={holdingsTap.tone === "on" ? holdingsTap.note : STATUS_WORD[holdingsTap.tone]}>
+            <HoldingsImport extras={extras} act={act} growwOn={!!setup?.groww.configured} />
+          </BusStation>
+
+          <BusStation tap={byKey.orders} open={open === "orders"} onToggle={() => toggle("orders")} blurb="How orders reach the market: on paper, by your hand, or by the bot" status={byKey.orders.note}>
+            <ModePicker extras={extras} act={act} />
+            <p className="small soft">
+              Automated orders are accepted by the broker only from a static IP registered to your account, with a login renewed each day. That is why guided baskets are the
+              default way to use real money: they need no fixed address. Nothing on this screen can switch automated orders on.
+            </p>
+            <ul className="steps-list">
+              <li className={setup?.groww.lastCheck?.ok ? "ok" : ""}><span><b>A Groww key that passes its check.</b> <span>{setup?.groww.lastCheck?.ok ? "Done." : "Connect it above."}</span></span></li>
+              <li className={setup?.groww.lastCheck?.ip?.ok ? "ok" : ""}><span><b>That machine&apos;s IP registered with Groww.</b> <span>{setup?.live.staticIp ? `Expected ${setup.live.staticIp}.` : "Set TB_EXPECTED_STATIC_IP there."}</span></span></li>
+              <li className={setup?.live.enabled ? "ok" : ""}><span><b>The live switch, set there.</b> <span><code>TB_LIVE_TRADING_ENABLED=true</code> in that machine&apos;s environment.</span></span></li>
+              <li><span><b>The command, typed by you.</b> <span><code>thunderbot invest --live --i-understand-the-risks</code></span></span></li>
+            </ul>
+          </BusStation>
+        </ul>
+      </section>
 
       <SettingsView control={control} refresh={refresh} go={go} />
     </div>
   );
 }
 
-function Station({ id, node, open, toggle, blurb, children }: {
-  id: StationId; node: SysNode; open: StationId | null; toggle: (id: StationId) => void; blurb: string; children: ReactNode;
-}) {
-  const isOpen = open === id;
+/** What the owner already holds: read from Groww when a key is connected, or typed in as a short list. */
+function HoldingsImport({ extras, act, growwOn }: { extras: PortfolioExtras; act: Act; growwOn: boolean }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const actual = extras.actual;
+  const rows = text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [symbol, qty, avg] = l.split(/[\s,]+/);
+    return { symbol: (symbol ?? "").toUpperCase(), qty: Number(qty), avg_price: Number(avg) };
+  });
+  const bad = rows.filter((r) => !r.symbol || !(r.qty > 0) || !(r.avg_price > 0));
+  const run = async (name: string, fn: () => Promise<void>, done: string) => {
+    setBusy(name);
+    setNote(null);
+    try { await fn(); setNote(done); } catch (e) { setNote(e instanceof Error ? e.message : String(e)); }
+    setBusy(null);
+  };
   return (
-    <section className={`station ${node.tone} ${isOpen ? "open" : ""}`}>
-      <button type="button" aria-expanded={isOpen} onClick={() => toggle(id)}>
-        <i className="node" aria-hidden />
-        <span className="name"><b>{node.name}</b><span>{blurb}</span></span>
-        <span className="status">{node.tone === "on" ? node.note : STATUS_WORD[node.tone]}</span>
-        <ChevronDown size={16} className="chev" aria-hidden />
-      </button>
-      {isOpen && <div className="station-body">{children}</div>}
-    </section>
+    <>
+      <p>
+        A plan that ignores what you already own starts from a fiction. Tell the bot your holdings and it rebalances from them, counts anything outside the plan, and never sells what it did not buy.
+      </p>
+      {actual?.holdings.length ? (
+        <div className="table-wrap"><table className="dense">
+          <thead><tr><th>Holding</th><th className="num">Units</th><th className="num">Avg price</th><th className="num">Value</th><th>In the plan</th></tr></thead>
+          <tbody>{actual.holdings.map((h) => (
+            <tr key={h.symbol}><td className="ticker">{h.symbol}</td><td className="num">{num(h.qty, 0)}</td><td className="num">{num(h.avg_price)}</td>
+              <td className="num">{h.value === null ? "–" : inr(h.value)}</td><td>{h.in_plan ? "yes" : "no, left alone"}</td></tr>
+          ))}</tbody>
+        </table></div>
+      ) : null}
+      {actual?.synced_at && <p className="small soft">Last read {dayTime(actual.synced_at)}{actual.source === "groww" ? " from Groww" : " from your list"}.</p>}
+      {growwOn && (
+        <div className="btn-row">
+          <Button onClick={() => run("sync", () => act("sync_holdings"), "Asked the worker to read your holdings from Groww. They appear after its next pass.")} disabled={busy !== null}>
+            {busy === "sync" && <LoaderCircle size={14} className="spin" />}Read my holdings from Groww
+          </Button>
+        </div>
+      )}
+      <div className="field">
+        <label htmlFor="hold-list"><span>Or type them in</span><span className="hint">one per line: symbol, units, average price</span></label>
+        <textarea id="hold-list" className="input key" rows={4} placeholder={"NIFTYBEES 120 268.40\nGOLDBEES 300 98.15"} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} />
+        {bad.length > 0 && <span className="hint loss">{bad.length} line{bad.length === 1 ? "" : "s"} could not be read. Each needs a symbol, a number of units and a price.</span>}
+      </div>
+      {note && <p className="small soft" role="status">{note}</p>}
+      <div className="btn-row">
+        <Button variant="primary" disabled={busy !== null || !rows.length || bad.length > 0}
+          onClick={() => run("save", async () => { await act("import_holdings", { rows }); setText(""); }, "Saved. The plan uses these from its next check.")}>
+          {busy === "save" && <LoaderCircle size={14} className="spin" />}Save these holdings
+        </Button>
+        {actual?.source === "manual" && <Button variant="quiet" disabled={busy !== null} onClick={() => run("clear", () => act("clear_holdings"), "Removed.")}>Remove my list</Button>}
+      </div>
+      <p className="small soft">Reading a consolidated statement PDF is not built yet.</p>
+    </>
   );
 }
 
@@ -297,7 +338,7 @@ function GrowwForm({ setup, refresh }: { setup: SetupState; refresh: () => void 
         {g.configured
           ? <>Connected{g.source === "dashboard" ? <>, key {g.hint}, saved {g.updatedAt ? dayTime(g.updatedAt) : "earlier"}</> : " from the worker's environment"}. </>
           : "Create an API key on Groww's Trade API page and paste it here. "}
-        It is used to read prices and history and to check that the login works. It cannot place a real order from here: see Paper orders below.
+        It is used to read prices and history and to check that the login works. It cannot place an order from here: see Orders below.
       </p>
       <div className="field">
         <label htmlFor="gw-key"><span>API key</span><a className="hint" href="https://groww.in/trade-api/api-keys" target="_blank" rel="noreferrer">Create one on Groww</a></label>

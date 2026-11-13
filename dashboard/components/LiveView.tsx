@@ -2,21 +2,25 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
-import { dayTime, hhmm, inr, num, signedInr } from "@/lib/format";
+import { dayTime, hhmm, inr, num, signed, signedInr } from "@/lib/format";
 import { workerAlive, type EventRow, type LiveState, type Plan, type Portfolio, type Position, type SignalCard } from "@/lib/types";
 import { asset, slices } from "@/lib/assets";
 import { wakeWorker } from "@/lib/usePoll";
 import DayStrip from "./DayStrip";
-import { Guilloche, Line, type Gate, type LineEnd } from "./Line";
+import type { Basket, PortfolioExtras } from "@/lib/portfolio";
+import { DecisionTrace, type Gate, type TraceEnd } from "./DecisionTrace";
+import { Guilloche } from "./Engraving";
+import { BasketTicket, CashFlowRouter, DriftCorridor, TaxHarvestMeter, driftFrom } from "./PortfolioParts";
 import { AnimatedNumber, Button, Empty, MixBar, Section, Skeleton, spring } from "./ui";
 
 const ALERT_KINDS = new Set(["error", "exit_failed", "stop_failed", "halt", "kill_switch", "order_rejected", "unmanaged_position"]);
 const tone = (n: number) => (n > 0 ? "gain" : n < 0 ? "loss" : "");
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-type Go = (page: "today" | "lab" | "results" | "log" | "settings" | "guide" | "desk") => void;
+type Go = (to: string) => void;
+type Act = (action: string, extra?: Record<string, unknown>) => Promise<void>;
 
-export default function LiveView({ state, act, refresh, go }: { state: LiveState | null; act: (a: string) => Promise<void>; refresh?: () => void; go?: Go }) {
+export default function LiveView({ state, act, refresh, go, llmOn = false }: { state: LiveState | null; act: Act; refresh?: () => void; go?: Go; llmOn?: boolean }) {
   if (!state) return <Loading />;
   const { control, tradesToday, equityToday, signals, events, sessionDay } = state;
   const hb = control.heartbeat;
@@ -35,7 +39,7 @@ export default function LiveView({ state, act, refresh, go }: { state: LiveState
 
   if (!hb) return <GetStarted control={control} refresh={refresh} go={go} act={act} />;
   if (hb.style === "invest" && hb.portfolio) {
-    return <InvestToday state={state} act={act} alive={alive} feedDown={feedDown} notStarted={!!notStarted} trading={trading} refresh={refresh} go={go} />;
+    return <InvestToday state={state} act={act} alive={alive} feedDown={feedDown} notStarted={!!notStarted} trading={trading} refresh={refresh} go={go} llmOn={llmOn} />;
   }
 
   const summary = !closed && !positions.length
@@ -166,7 +170,7 @@ function WakeButton({ refresh, label, variant = "quiet", size = "sm" }: { refres
 }
 
 /** First visit: nothing has reported in yet. Three steps to a running bot, in order. */
-function GetStarted({ control, refresh, go, act }: { control: LiveState["control"]; refresh?: () => void; go?: Go; act: (a: string) => Promise<void> }) {
+function GetStarted({ control, refresh, go, act }: { control: LiveState["control"]; refresh?: () => void; go?: Go; act: Act }) {
   const picked = !!control.invest_settings?.strategy;
   return (
     <div className="page">
@@ -188,7 +192,7 @@ function GetStarted({ control, refresh, go, act }: { control: LiveState["control
           <div className={`step ${picked ? "done" : ""}`}>
             <h3>Choose a plan</h3>
             <p>Test each plan on 15 years of real prices, after costs and tax, and pick the one you can live with.</p>
-            <Button onClick={() => go?.("lab")}>See the plans</Button>
+            <Button onClick={() => go?.("/portfolio/plan")}>See the plans</Button>
           </div>
           <div className="step">
             <h3>Start paper investing</h3>
@@ -200,9 +204,9 @@ function GetStarted({ control, refresh, go, act }: { control: LiveState["control
       <p className="small soft" style={{ maxWidth: "70ch" }}>
         If waking fails on your own computer, the worker isn&apos;t running there: start <code>thunderbot serve</code> and then <code>thunderbot tick</code>.
         On Vercel, check that the deployment built the worker function. Keys for an LLM and for Groww go in{" "}
-        <button type="button" onClick={() => go?.("settings")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Setup</button>;
+        <button type="button" onClick={() => go?.("/setup")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Setup</button>;
         how it all works is in the{" "}
-        <button type="button" onClick={() => go?.("guide")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Guide</button>.
+        <button type="button" onClick={() => go?.("/guide")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Guide</button>.
       </p>
     </div>
   );
@@ -255,13 +259,16 @@ function Tickets({ plan, mode }: { plan: Plan; mode: string }) {
   );
 }
 
-function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh, go }: {
-  state: LiveState; act: (a: string) => Promise<void>; alive: boolean; feedDown: string | null; notStarted: boolean; trading: boolean;
-  refresh?: () => void; go?: Go;
+function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh, go, llmOn }: {
+  state: LiveState; act: Act; alive: boolean; feedDown: string | null; notStarted: boolean; trading: boolean;
+  refresh?: () => void; go?: Go; llmOn: boolean;
 }) {
   const { control, events } = state;
   const hb = control.heartbeat!;
   const p = hb.portfolio!;
+  const x = p as typeof p & PortfolioExtras;
+  const execMode = x.exec_mode ?? (hb.mode === "live" ? "auto" : "paper");
+  const [selling, setSelling] = useState(false);
   const gain = p.value - p.capital;
   const serverless = hb.scheduler === "serverless";
   const empty = !p.holdings.length;
@@ -299,7 +306,7 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
             <p className="hero-line">
               {empty && notStarted
                 ? <>Paper money, waiting. Press Start and <strong>{strategyName}</strong> makes its first check at {p.run_at} IST.</>
-                : <><strong className={tone(gain)}>{signedInr(gain)}</strong> ({gain >= 0 ? "+" : ""}{((gain / p.capital) * 100).toFixed(1)}%) since you started with {inr(p.capital)}{hb.mode === "live" ? "" : " of paper money"}.</>}
+                : <><strong className={tone(gain)}>{signedInr(gain)}</strong> ({signed((gain / p.capital) * 100, 1)}%) since you started with {inr(p.capital)}{execMode === "paper" ? " of paper money" : execMode === "guided" ? ", orders placed by you" : ""}.</>}
             </p>
           </div>
           <dl className="next" style={{ margin: 0 }}>
@@ -314,34 +321,54 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
           : <MixBar slices={slices(held)} caption="How it is split" />}
       </section>
 
-      <Section title={p.last_plan ? "The last decision" : "The next decision"} aside={<p>Each daily check runs left to right. A check can hold the plan back; it can never change an order.</p>}>
-        <div className="stage"><DecisionLine p={p} strategyName={strategyName} llm={!!control.effective_settings?.env_only.llm_configured} next={`${next.day}, ${p.run_at}`} mode={hb.mode} /></div>
+      <Section title={(p.last_plan || x.basket) && !p.pending ? "The last decision" : "The next decision"} aside={<p>Each daily check runs left to right. A check can hold the plan back; it can never change an order.</p>}>
+        <div className="stage"><DailyTrace p={p} basket={x.basket ?? null} strategyName={strategyName} llm={llmOn} next={`${next.day}, ${p.run_at}`} mode={execMode} /></div>
+      </Section>
+
+      <Section title="Where each holding sits" aside={<p>{x.band ? `Band: ${x.band.abs_pct} points or ${x.band.rel_pct}% of target, whichever is tighter` : "Band: 5 points or a fifth of target, whichever is tighter"}</p>}>
+        <DriftCorridor rows={x.drift ?? driftFrom(p.holdings, target)} next={x.next_deposit} />
       </Section>
 
       <div className="split">
         <div className="page" style={{ gap: 44 }}>
+          {x.basket && (
+            <Section title="Orders to place" aside={<p>{dayTime(x.basket.at)}</p>}>
+              <BasketTicket basket={x.basket} act={act} />
+            </Section>
+          )}
           <Section title="What you hold" aside={<p>{empty ? "nothing yet" : `${p.holdings.length} ${p.holdings.length === 1 ? "holding" : "holdings"}, ${inr(p.cash)} in cash`}</p>}>
             {empty ? <Empty title="All cash for now.">Holdings appear after the first check at {p.run_at} IST on a trading day.</Empty> : (
               <div className="table-wrap"><table>
-                <thead><tr><th>Holding</th><th className="num hide-sm">Units</th><th className="num hide-sm">Price</th><th className="num">Value</th><th className="num hide-sm">Share</th><th className="num">Gain</th></tr></thead>
-                <tbody>{[...p.holdings].sort((x, y) => ORDER.indexOf(asset(x.symbol).kind) - ORDER.indexOf(asset(y.symbol).kind)).map((h) => {
+                <thead><tr><th>Holding</th><th className="num hide-sm">Units</th><th className="num hide-sm">Price</th><th className="num">Value</th><th className="num">Gain</th></tr></thead>
+                <tbody>{[...p.holdings].sort((a, b) => ORDER.indexOf(asset(a.symbol).kind) - ORDER.indexOf(asset(b.symbol).kind)).map((h) => {
                   const a = asset(h.symbol);
-                  const want = target?.[h.symbol];
                   return (
                     <tr key={h.symbol}>
                       <td><span className={`swatch ${a.kind}`} />{a.known ? <>{a.name} <span className="soft small hide-sm">{h.symbol}</span></> : <span className="ticker">{h.symbol}</span>}</td>
                       <td className="num hide-sm">{num(h.qty, 0)}</td><td className="num hide-sm">{num(h.ltp)}</td><td className="num">{inr(h.value)}</td>
-                      <td className="num hide-sm">{h.weight.toFixed(1)}%{want !== undefined && <span className="soft small"> of {want.toFixed(0)}</span>}</td>
                       <td className={`num ${tone(h.pnl)}`}>{signedInr(h.pnl)}</td>
                     </tr>
                   );
                 })}</tbody>
               </table></div>
             )}
+            {x.actual && x.actual.holdings.some((h) => !h.in_plan) && (
+              <p className="small soft" style={{ marginTop: 12, maxWidth: "62ch" }}>
+                You also hold {inr(x.actual.outside_plan_value)} outside this plan ({x.actual.holdings.filter((h) => !h.in_plan).map((h) => h.symbol).join(", ")}). The bot counts it and never sells it.
+              </p>
+            )}
           </Section>
-          {p.last_plan && (
-            <Section title={hb.mode === "live" ? "Latest orders" : "Orders to copy into Groww"}>
+          {p.last_plan && !x.basket && (
+            <Section title={execMode === "auto" ? "Latest orders" : "The last orders"}>
               <Tickets plan={p.last_plan} mode={hb.mode} />
+            </Section>
+          )}
+          <Section title="Adding money" aside={<p>Routed to whatever is furthest below target</p>}>
+            <CashFlowRouter next={x.next_deposit} pending={x.pending_deposit} act={act} />
+          </Section>
+          {x.tax_year && (
+            <Section title="This tax year" aside={<p>{x.tax_year.fy}</p>}>
+              <TaxHarvestMeter tax={x.tax_year} act={act} />
             </Section>
           )}
         </div>
@@ -354,11 +381,11 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
               <div>
                 <span className={`pip ${trading && alive ? "now" : ""}`} />
                 <div><dt>{strategyName}: month-end review on {nextRebalance}</dt><dd>{TRADES_WHEN[hb.strategy ?? ""] ?? "It trades only on rebalance days."}{" "}
-                  <button type="button" onClick={() => go?.("lab")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit" }}>Change plan</button></dd></div>
+                  <button type="button" onClick={() => go?.("/portfolio/plan")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Change plan</button></dd></div>
               </div>
               {timed && signals.map(([sym, sig]) => (
                 <div key={sym}>
-                  <span className="pip" style={{ background: `var(--a-${asset(sym).kind === "next50" ? "next" : asset(sym).kind})` }} />
+                  <span className="pip" style={{ background: `var(--a-${asset(sym).kind === "next50" ? "next" : asset(sym).kind})`, borderColor: "transparent" }} />
                   <div><dt>{asset(sym).name} is {sig.above ? "above" : "below"} its 200-day average</dt>
                     <dd>{num(sig.price)} against {num(sig.avg)}, so it is {sig.above ? "held" : `parked in ${p.liquid_symbol ?? "the liquid ETF"}`} at the next month-end check.</dd></div>
                 </div>
@@ -371,12 +398,34 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
               </div>
               <div>
                 <span className="pip" />
-                <div><dt>{hb.mode === "live" ? "Real orders on Groww" : "Paper orders"}</dt>
-                  <dd>{hb.mode === "live" ? "Delivery limit orders, placed from the registered static IP." : "Fills are simulated at live Yahoo prices with Groww's charges. Real orders need the Trade API and a static IP of your own."}</dd></div>
+                <div><dt>{execMode === "auto" ? "Real orders, placed by the bot" : execMode === "guided" ? "Real orders, placed by you" : "Paper orders"}</dt>
+                  <dd>{execMode === "auto" ? "Delivery limit orders, sent from your registered static IP."
+                    : execMode === "guided" ? "The bot works out the orders and lists them; you place them in Groww. It then checks what you hold against the list."
+                    : "Fills are simulated at live prices with Groww's charges taken off."}{" "}
+                    <button type="button" onClick={() => go?.("/setup")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Change how orders are placed</button></dd></div>
               </div>
             </dl>
+            {!empty && (
+              <div style={{ marginTop: 18 }}>
+                {!selling
+                  ? <Button size="sm" variant="quiet" onClick={() => setSelling(true)}>Sell everything</Button>
+                  : (
+                    <div className="notice stop" style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
+                      <span className="grow">
+                        This sells all {p.holdings.length} holdings, about {inr(p.holdings.reduce((a, h) => a + h.value, 0))}, at the next check.
+                        It books {signedInr(p.holdings.reduce((a, h) => a + h.pnl, 0))} of gains, which are taxed by how long each lot was held, and costs charges on every sale.
+                        Pausing instead sells nothing.
+                      </span>
+                      <span className="btn-row">
+                        <Button size="sm" variant="stop" onClick={async () => { await act("sell_all"); setSelling(false); }}>Sell everything</Button>
+                        <Button size="sm" variant="quiet" onClick={() => setSelling(false)}>Keep holding</Button>
+                      </span>
+                    </div>
+                  )}
+              </div>
+            )}
           </Section>
-          <Section title="Activity" aside={<Button size="sm" variant="quiet" onClick={() => go?.("log")}>See all</Button>}>
+          <Section title="Activity" aside={<Button size="sm" variant="quiet" onClick={() => go?.("/journal/log")}>See all</Button>}>
             <EngineLog events={events} />
           </Section>
         </div>
@@ -385,22 +434,31 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
   );
 }
 
-/** One daily check as a line: the plan proposes, the checks may hold it back, orders come out the end. */
-function DecisionLine({ p, strategyName, llm, next, mode }: { p: Portfolio; strategyName: string; llm: boolean; next: string; mode: string }) {
-  const plan = p.last_plan;
-  const waiting = !!p.pending || !plan;
+/** One daily check as a trace: the plan proposes, the checks may hold it back, orders come out the end.
+ *  A rebalance is several orders at once, so the end fans into one chip per order. */
+function DailyTrace({ p, basket, strategyName, llm, next, mode }: { p: Portfolio; basket: Basket | null; strategyName: string; llm: boolean; next: string; mode: string }) {
+  // In guided mode the decision's orders are the basket, not fills.
+  const plan = basket ? { at: basket.at, late: false, strategy: p.last_plan?.strategy ?? "", target: {}, orders: basket.orders.map((o) => ({ symbol: o.symbol, side: o.side, qty: o.qty, price: o.limit, value: o.value })) } : p.last_plan;
+  const open = basket?.status === "open";
+  const held = !!p.pending;
+  const fresh = !plan && !held;
   const gates: Gate[] = [
-    { key: "due", label: "Decision day", state: plan ? "pass" : "wait", value: plan ? dayTime(plan.at) : `next check ${next}` },
-    { key: "prices", label: "Price check", state: waiting ? "wait" : "pass", value: waiting ? (p.missed ? "started too late" : "runs first") : plan?.late ? "closing prices" : "prices looked right" },
-    llm
-      ? { key: "llm", label: "LLM check", state: waiting ? "wait" : "pass", value: waiting ? "may postpone a day" : "no objection" }
-      : { key: "llm", label: "LLM check", state: waiting ? "wait" : "absent", value: "none connected" },
+    { key: "due", label: "Decision day", state: fresh ? "wait" : "pass", value: fresh ? `first check ${next}` : held ? "a rebalance was due" : dayTime(plan!.at) },
+    { key: "prices", label: "Price check", state: fresh ? "wait" : held && p.missed ? "defer" : "pass",
+      value: fresh ? "runs first" : held && p.missed ? "started too late to trade" : plan?.late ? "closing prices" : "prices looked right" },
+    !llm ? { key: "llm", label: "LLM check", state: fresh ? "wait" : "absent", value: "no model fitted" }
+      : held && !p.missed ? { key: "llm", label: "LLM check", state: "defer", value: "held for a session" }
+      : { key: "llm", label: "LLM check", state: fresh ? "wait" : "pass", value: fresh ? "may hold it a day" : "no objection" },
   ];
-  const orders = plan?.orders.length ?? 0;
-  const end: LineEnd = waiting
-    ? { label: "Orders", value: p.pending ? `decided again ${next}` : "none yet" }
-    : { label: orders ? `${orders} ${orders === 1 ? "order" : "orders"}` : "No trades needed", value: orders ? (mode === "live" ? "placed on Groww" : "filled on paper") : "holdings already match" };
-  return <Line size="lg" source={{ label: "Plan", value: strategyName }} gates={gates} end={end} label="The last daily decision" />;
+  const orders = plan?.orders ?? [];
+  const sorted = [...orders].sort((a, b) => (a.side === b.side ? 0 : a.side === "SELL" ? -1 : 1));
+  const end: TraceEnd = held ? { label: "Orders", value: `decided again ${next}` }
+    : fresh ? { label: "Orders", value: "none yet" }
+    : orders.length
+      ? { label: `${orders.length} ${orders.length === 1 ? "order" : "orders"}`, value: basket ? (open ? "for you to place" : "placed by you") : mode === "auto" ? "placed on Groww" : "filled on paper",
+          legs: sorted.map((o) => ({ side: o.side, text: `${o.qty} ${asset(o.symbol).known ? asset(o.symbol).name : o.symbol}` })) }
+      : { label: "No trades needed", value: "holdings already match" };
+  return <DecisionTrace size="lg" live={open} source={{ label: "Plan", value: strategyName }} gates={gates} end={end} label="The daily decision" />;
 }
 
 function Notice({ kind, children, action }: { kind: "stop" | "caution" | "info"; children: React.ReactNode; action?: React.ReactNode }) {

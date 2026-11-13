@@ -1,9 +1,14 @@
 const inrFmt = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const inrFmt2 = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
 
+/** A true minus sign (U+2212), which is as wide as a plus and lines up in columns; a hyphen is not. */
+export const MINUS = "\u2212";
+const minus = (s: string) => s.replace(/^-/, MINUS);
+
+/** Rupees with Indian grouping (lakh, crore). */
 export function inr(n: number | null | undefined, decimals = 0): string {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
-  return (decimals ? inrFmt2 : inrFmt).format(Number(n));
+  return minus((decimals ? inrFmt2 : inrFmt).format(Number(n)));
 }
 
 export function signedInr(n: number | null | undefined): string {
@@ -14,12 +19,19 @@ export function signedInr(n: number | null | undefined): string {
 
 export function num(n: number | null | undefined, d = 2): string {
   if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
-  return Number(n).toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: 0 });
+  return minus(Number(n).toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: 0 }));
 }
 
 export function pct(n: number | null | undefined, d = 1): string {
   if (n === null || n === undefined) return "–";
-  return `${Number(n).toFixed(d)}%`;
+  return `${minus(Number(n).toFixed(d))}%`;
+}
+
+/** A signed number with a true minus: +0.42, −1.30. */
+export function signed(n: number | null | undefined, d = 2): string {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "–";
+  const v = Number(n);
+  return `${v > 0 ? "+" : ""}${minus(v.toFixed(d))}`;
 }
 
 export function hhmm(iso: string): string {

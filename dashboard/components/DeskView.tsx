@@ -2,12 +2,12 @@
 
 import { ChevronDown, LoaderCircle, OctagonX, Play, RefreshCw, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
-import { ago, inr, num, signedInr } from "@/lib/format";
+import { ago, inr, num, signed, signedInr } from "@/lib/format";
 import type { SetupState } from "@/lib/setup";
 import type { AIDesk, DeskDecision, DeskPosition, GroupStats, Job, LiveState, ModelReport } from "@/lib/types";
 import { post, startJob, usePoll, wakeWorker } from "@/lib/usePoll";
 import { PnlBars, PnlCurve } from "./charts";
-import { Line, type Gate, type LineEnd } from "./Line";
+import { DecisionTrace, type Gate, type TraceEnd } from "./DecisionTrace";
 import { Button, HoldButton, Segmented, StatusDot } from "./ui";
 
 const STATUS: Record<AIDesk["status"], { tone: "on" | "off" | "idle"; text: string }> = {
@@ -41,7 +41,7 @@ const VERDICT: Record<string, { tag: string; cls: string }> = {
   no_edge: { tag: "No edge yet", cls: "bad" }, too_few: { tag: "Too little data", cls: "warn" },
 };
 
-const sign = (n: number | null | undefined, d = 2) => (n === null || n === undefined ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(d)}`);
+const sign = signed;
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss");
 
 const STATUS_SENTENCE: Record<AIDesk["status"], string> = {
@@ -58,7 +58,7 @@ const NOT_LLM = new Set(["", "model", "desk", "risk limits"]);
 const SHORT: Record<string, string> = { orb: "Breakout", vwap_reversion: "Reversion", ema_pullback: "Pullback", momentum: "Momentum" };
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-type Go = (page: "settings" | "guide" | "lab") => void;
+type Go = (to: string) => void;
 
 export default function DeskView({ state, refresh, setup, go }: { state: LiveState | null; refresh: () => void; setup: SetupState | null; go?: Go }) {
   const control = state?.control;
@@ -97,7 +97,7 @@ export default function DeskView({ state, refresh, setup, go }: { state: LiveSta
     <div className="desk">
       <div className="desk-top">
         <div>
-          <h1>Desk</h1>
+          <h2 style={{ fontSize: 24 }}>The intraday desk</h2>
           <p className="statement">
             <StatusDot tone={status.tone} />{" "}
             {desk ? STATUS_SENTENCE[desk.status] ?? status.text : "The desk has not run yet"}.{" "}
@@ -126,8 +126,8 @@ export default function DeskView({ state, refresh, setup, go }: { state: LiveSta
           <small>{market.index_ret_open_pct !== undefined ? <>Nifty <span className={tone(market.index_ret_open_pct)}>{sign(market.index_ret_open_pct)}%</span></> : "no read yet"}{market.breadth_up_pct !== undefined && `, ${market.breadth_up_pct}% of stocks up`}</small></dd></div>
         <div><dt>Model</dt><dd>{summary ? VERDICT[summary.verdict]?.tag ?? summary.verdict : training ? "Training now" : "Not trained yet"}
           <small>{summary ? `ranks at ${summary.auc?.toFixed(2) ?? "–"} where 0.50 is a coin toss; trained ${ago(summary.trained_at)}` : "trains on the last 60 days of bars"}</small></dd></div>
-        <div><dt>LLM</dt><dd>{llmOn ? desk!.llm.provider : "Not connected"}
-          <small>{llmOn ? desk!.llm.model : "the model decides alone"}</small></dd></div>
+        <div><dt>LLM</dt><dd>{llmOn ? (desk!.stage === "shadow" ? `${desk!.llm.provider}, watching only` : desk!.llm.provider) : "Not connected"}
+          <small>{llmOn ? (desk!.stage === "shadow" ? `${desk!.llm.model} is asked and scored, not yet obeyed` : desk!.llm.model) : "the model decides alone"}</small></dd></div>
         <div><dt>Limits</dt><dd>{desk ? `${desk.limits.risk_per_trade_pct}% risked a trade` : "–"}
           <small>{desk ? `stops at −${desk.limits.max_daily_loss_pct}% a day, ${desk.limits.max_open_positions} open at most, ${stats?.trades ?? 0} of ${desk.limits.max_trades_per_day} trades used` : "set in Setup"}</small></dd></div>
       </dl>
@@ -139,15 +139,15 @@ export default function DeskView({ state, refresh, setup, go }: { state: LiveSta
         {desk && !llmOn && (
           <div className="notice caution">
             <span className="grow">No LLM is connected, so a setup that passes the model is taken without a second opinion.</span>
-            <Button size="sm" onClick={() => go?.("settings")}>Connect one in Setup</Button>
+            <Button size="sm" onClick={() => go?.("/setup")}>Connect one in Setup</Button>
           </div>
         )}
       </div>
 
       <div className="desk-grid">
         <div className="desk-main">
-          <Block title="Today's setups" aside="Each setup runs left to right. A gate can break the line or thin it, never thicken it.">
-            {desk?.decisions.length ? <Tape rows={desk.decisions} llmOn={llmOn} /> : (
+          <Block title="Today's setups" aside="Each setup runs left to right. The faint channel is full size; the filled core is what is left of it.">
+            {desk?.decisions.length ? <Tape rows={desk.decisions} llmOn={llmOn} go={go} /> : (
               <p className="quiet-line">{enabled ? `No setups yet today. The desk checks every five minutes between ${(desk?.limits.entry_window ?? "09:30-14:30").replace("-", " and ")} IST.` : "The desk is off. Start it to see setups here."}</p>
             )}
           </Block>
@@ -233,29 +233,34 @@ function Positions({ rows }: { rows: DeskPosition[] }) {
 }
 
 /** A setup's journey as gates on the line: where it was stopped or thinned, and what came out the end. */
-function journey(d: DeskDecision, llmOn: boolean): { gates: Gate[]; end: LineEnd } {
+function journey(d: DeskDecision, llmOn: boolean): { gates: Gate[]; end: TraceEnd } {
   const byLLM = !NOT_LLM.has(d.by);
   const reviewed = byLLM || d.confidence !== undefined || d.size !== undefined;
   const pct = d.prob === null ? null : Math.round(d.prob * 100);
-  const skippedBy = d.verdict === "skip" ? (d.by === "model" ? "model" : byLLM ? "llm" : "limits") : null;
+  const skippedBy = d.verdict === "skip" ? (d.by === "model" ? "model" : byLLM && d.stage !== "shadow" ? "llm" : "limits") : null;
 
   const model: Gate = pct === null
     ? { key: "model", label: "Model", state: "absent", value: "no model yet" }
     : { key: "model", label: "Model", state: skippedBy === "model" ? "cut" : "pass", value: skippedBy === "model" ? `${pct}%, too low` : `scored ${pct}%` };
-  const llm: Gate = !reviewed
-    ? { key: "llm", label: "LLM", state: "absent", value: llmOn ? "not asked" : "none connected" }
+  // A role that is only watching was asked and answered, but nothing it said was applied: the line runs
+  // through its socket unbroken, and the caption says what it would have done.
+  const watching = d.stage === "shadow" && (d.said !== undefined || reviewed);
+  const would = d.error ? "its call failed" : d.said === "skip" ? "would skip" : d.asked_size !== undefined && d.asked_size < 1 ? `would cut to ${Math.round(d.asked_size * 100)}%` : "would take";
+  const llm: Gate = watching ? { key: "llm", label: "LLM, watching", state: "absent", value: would }
+    : !reviewed
+    ? { key: "llm", label: "LLM", state: "absent", value: llmOn ? "not asked" : "no model fitted" }
     : d.error ? { key: "llm", label: "LLM", state: "cut", value: "call failed" }
     : skippedBy === "llm" ? { key: "llm", label: "LLM", state: "cut", value: "said skip" }
-    : d.size !== undefined && d.size < 1 ? { key: "llm", label: "LLM", state: "thin", size: d.size, value: `cut to ${Math.round(d.size * 100)}%` }
+    : d.size !== undefined && d.size < 1 ? { key: "llm", label: "LLM", state: "thin", size: d.size, value: "asked for less" }
     : { key: "llm", label: "LLM", state: "pass", value: "said take" };
   const limits: Gate = skippedBy === "limits"
     ? { key: "limits", label: "Limits", state: "cut", value: d.by === "desk" ? "desk not taking" : "over a limit" }
     : d.verdict === "take" ? { key: "limits", label: "Limits", state: "pass", value: d.qty ? `${d.qty} shares` : "within limits" }
     : { key: "limits", label: "Limits", state: d.verdict === "" ? "wait" : "pass" };
 
-  let end: LineEnd;
+  let end: TraceEnd;
   if (d.verdict === "take") {
-    if (d.status === "closed") end = { label: (d.exit ?? "closed").replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()), value: signedInr(d.pnl ?? 0), tone: tone(d.pnl) as LineEnd["tone"] };
+    if (d.status === "closed") end = { label: (d.exit ?? "closed").replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()), value: signedInr(d.pnl ?? 0), tone: tone(d.pnl) as TraceEnd["tone"] };
     else if (d.status === "open") end = { label: "Open", value: d.fill ? `in at ${num(d.fill)}` : "position on" };
     else if (d.status === "pending") end = { label: "Order", value: "fills next bar" };
     else end = { label: "Order", value: d.status ?? "placed" };
@@ -267,7 +272,7 @@ function journey(d: DeskDecision, llmOn: boolean): { gates: Gate[]; end: LineEnd
   return { gates: [model, llm, limits], end };
 }
 
-function Tape({ rows, llmOn }: { rows: DeskDecision[]; llmOn: boolean }) {
+function Tape({ rows, llmOn, go }: { rows: DeskDecision[]; llmOn: boolean; go?: Go }) {
   const [open, setOpen] = useState<string | null>(null);
   const ordered = useMemo(() => [...rows].reverse(), [rows]);
   return (
@@ -284,7 +289,7 @@ function Tape({ rows, llmOn }: { rows: DeskDecision[]; llmOn: boolean }) {
                 <b>{d.symbol}</b>
                 <span>{d.t} <span className={`dir ${d.side === "BUY" ? "buy" : "sell"}`}>{d.side === "BUY" ? "long" : "short"}</span></span>
               </span>
-              <Line source={{ label: "Rule", value: SHORT[d.kind] ?? setupName }} gates={gates} end={end}
+              <DecisionTrace live={d.status === "open" || d.status === "pending"} source={{ label: "Rule", value: SHORT[d.kind] ?? setupName }} gates={gates} end={end}
                 label={`${d.symbol} ${setupName}: ${d.verdict === "take" ? "taken" : "skipped"}`} />
               <ChevronDown size={16} className="chev" aria-hidden />
             </button>
@@ -298,6 +303,7 @@ function Tape({ rows, llmOn }: { rows: DeskDecision[]; llmOn: boolean }) {
                 </div>
                 <div><h4>The model</h4><p>{d.prob === null ? "No model yet, so it passed through unscored." : `${Math.round(d.prob * 100)}% chance of a profit after costs${d.expected_r !== null ? `; it expects ${sign(d.expected_r)}R` : ""}.`}</p>
                   {d.r !== undefined && <p className="soft">Followed mechanically it made {sign(d.r)}R ({d.outcome === "eod" ? "held to the close" : `hit its ${d.outcome}`}), before costs.</p>}
+                  <p><a href={`/journal/${d.id}`} onClick={(e) => { if (!e.metaKey && !e.ctrlKey) { e.preventDefault(); go?.(`/journal/${d.id}`); } }}>Open this decision&apos;s page</a></p>
                 </div>
               </div>
             )}
@@ -431,11 +437,11 @@ function Notes({ control }: { control?: LiveState["control"] }) {
   return (
     <div className="notes">
       {review && (byModel
-        ? <p className="voice">{review.summary}<span className="voice-by">{review.by}, on {review.day}</span></p>
+        ? <div className="voice-block"><div className="who"><span className="tag">{review.by}</span><span className="tag">non-binding</span><span>{review.day}</span></div><p>{review.summary}</p></div>
         : <p>{review.numbers.trades} trade{review.numbers.trades === 1 ? "" : "s"}, net {signedInr(review.numbers.net_pnl)}.</p>)}
       {review && review.numbers.skipped_avg_r !== null && <p className="soft small" style={{ marginTop: 8 }}>Skipped setups averaged {sign(review.numbers.skipped_avg_r)}R; taken ones {sign(review.numbers.taken_avg_r)}R.</p>}
       {mem?.lessons?.length ? <ul>{[...mem.lessons].reverse().map((l, i) => <li key={i}><span className="soft">{l.day.slice(5)}</span><span className="voice">{l.text}</span></li>)}</ul> : null}
-      {mem?.lessons?.length ? <p className="soft small" style={{ marginTop: 10 }}>Lessons are written by the LLM from one day&apos;s evidence and shown to it before each decision. They are not yet scored.</p> : null}
+      {mem?.lessons?.length ? <p className="soft small" style={{ marginTop: 10 }}>Lessons are written by the LLM from one day&apos;s evidence. They are kept here for you to read and are not shown back to the model unless the harness says so.</p> : null}
     </div>
   );
 }
@@ -478,7 +484,7 @@ function Readiness({ control, setup, go }: { control?: LiveState["control"]; set
       </ul>
       <p className="small soft">
         Real orders are only accepted from a static IP registered to your account, so they need a small machine of your own running <code>thunderbot live</code>.
-        Nothing on this dashboard can switch them on. <button type="button" onClick={() => go?.("settings")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Open Setup</button>
+        Nothing on this dashboard can switch them on. <button type="button" onClick={() => go?.("/setup")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Open Setup</button>
       </p>
     </>
   );

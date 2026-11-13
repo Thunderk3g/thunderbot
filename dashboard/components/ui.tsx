@@ -87,7 +87,9 @@ export function Button({ children, variant = "", size = "", onClick, disabled, t
 }
 
 /** Press and hold to confirm, so the stop can't be hit by accident. */
-export function HoldButton({ children, onConfirm, duration = 1.1, block }: { children: ReactNode; onConfirm: () => void; duration?: number; block?: boolean }) {
+export function HoldButton({ children, onConfirm, duration = 1.1, block, label = "Stop trading: press and hold", tone = "stop" }: {
+  children: ReactNode; onConfirm: () => void; duration?: number; block?: boolean; label?: string; tone?: "stop" | "pause";
+}) {
   const progress = useMotionValue(0);
   const ctrl = useRef<ReturnType<typeof animate> | null>(null);
   const start = () => {
@@ -102,10 +104,10 @@ export function HoldButton({ children, onConfirm, duration = 1.1, block }: { chi
     ctrl.current = animate(progress, 0, { duration: 0.2 });
   };
   return (
-    <button type="button" className={`btn stop hold ${block ? "block" : ""}`} onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel}
+    <button type="button" className={`btn ${tone} hold ${block ? "block" : ""}`} onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!e.repeat) start(); } }}
       onKeyUp={(e) => { if (e.key === "Enter" || e.key === " ") cancel(); }}
-      aria-label="Stop trading: press and hold">
+      aria-label={label}>
       <motion.div className="hold-fill" style={{ scaleX: progress }} />
       <span>{children}</span>
     </button>
@@ -227,5 +229,17 @@ export function MixBar({ slices, caption }: { slices: Slice[]; caption?: string 
         {slices.map((s) => <span key={s.key}><i className={`swatch ${s.kind}`} />{s.name}</span>)}
       </div>
     </div>
+  );
+}
+
+/** Sub-pages of a page, as real links so each has its own address. */
+export function Tabs({ items, current, go }: { items: { href: string; label: ReactNode }[]; current: string; go: (to: string) => void }) {
+  return (
+    <nav className="tabs" aria-label="Sections">
+      {items.map((i) => (
+        <a key={i.href} href={i.href} aria-current={i.href === current ? "page" : undefined}
+          onClick={(e) => { if (!e.metaKey && !e.ctrlKey) { e.preventDefault(); go(i.href); } }}>{i.label}</a>
+      ))}
+    </nav>
   );
 }

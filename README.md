@@ -1,26 +1,31 @@
 # Thunderbot
 
-A personal investing and trading system for NSE on **Groww**, run from a web cockpit, with no server
-to keep alive.
+A portfolio manager for NSE that you run yourself, on **Groww**, with no server to keep alive. Rules
+decide; an LLM may only say no, less or later; and a journal shows whether each part earned its place.
 
-- **Daily ETF strategies** do the real work: a fixed mix of Nifty 50, Next 50 and gold ETFs rebalanced
-  once a year, or a trend rotation of the same ETFs that parks in a liquid ETF. One decision a day at
-  15:10 IST, a handful of trades a year.
-- **A function, not a server.** Supabase's scheduler (every five minutes) and Vercel's own (every fifteen)
-  wake a Python function on Vercel in market hours; it does one pass and exits. Setup:
-  [`docs/no-server.md`](docs/no-server.md).
-- **An honest Lab.** Every backtest is after Groww charges and capital-gains tax by asset class, and is
-  shown next to holding the Nifty ETF and next to holding the same ETFs with no timing.
-- **An LLM that checks, not predicts.** An optional LLM can postpone a rebalance when prices or orders
-  look wrong, and take, skip or shrink an intraday trade. It can never create, change or enlarge one.
+- **A portfolio, not a script.** It works from what you actually hold, shows how far each holding has
+  drifted from its target, routes new money to whatever is furthest below target so most months nothing
+  is sold, and plans the year's tax-free gain harvest.
+- **Three ways to place orders.** On paper; as a **guided basket** the bot works out and you place by hand
+  in Groww, which needs no fixed IP; or automated, which the broker accepts only from your registered
+  static IP and which nothing on the dashboard can switch on.
+- **A function, not a server.** Supabase's scheduler wakes a Python function on Vercel in market hours;
+  it does one pass and exits. Setup: [`docs/no-server.md`](docs/no-server.md).
+- **A harness you can read.** Your limits, the plan, each LLM role's prompt and the tests a role must pass
+  are plain files with a version id that is stamped on every decision. See [`docs/harness.md`](docs/harness.md).
+- **A model earns its authority.** Every LLM answer is scored against the same setup with the model left
+  out, after charges and the cost of the call. A role is only obeyed once the evidence says it helps, and
+  is sent back to watching if it stops helping.
+- **An honest Lab.** Backtests are after Groww charges and capital-gains tax by asset class, beside holding
+  the Nifty ETF and beside the same ETFs with no timing. Parameter sweeps are marked down for every
+  setting ever tried on the data.
 - **Bring your own keys.** Paste an LLM key (Claude, Grok, Groq, OpenAI, Gemini, OpenRouter, or any
   OpenAI-compatible server) and a Groww key on the Setup page. Each is checked, then stored encrypted in
-  your own database. Nothing saved there can switch on real orders.
-- **A desk for intraday.** Four setup generators, a machine-learning model that scores every setup, and
-  an LLM that takes or skips it, all under fixed risk limits. It paper-trades
-  every five minutes from the same function and shows its reasoning for every decision. On its first run the
-  model found no edge and every setup type lost after costs; the desk exists to keep testing that with no
-  money at risk. See [`docs/ai-desk.md`](docs/ai-desk.md).
+  your own database.
+- **An intraday desk, kept in the Lab.** Four setup generators, a small model that scores each setup, and
+  an LLM that takes or skips it. It paper-trades every five minutes. Its first model found no edge and
+  every setup type lost after costs; it stays in the Lab to keep testing that with no money at risk.
+  See [`docs/ai-desk.md`](docs/ai-desk.md).
 
 > **No code can guarantee profit.** The research behind this build
 > ([`reports/ETF rotation and serverless hosting.md`](reports/ETF%20rotation%20and%20serverless%20hosting.md))
@@ -47,14 +52,14 @@ cannot change what the engine allows.
 
 | Pillar | Today | Still missing |
 |---|---|---|
-| Honest backtests | After charges and tax, beside the index and a no-timing twin | Correction for trying many settings; survivorship-free stock lists |
+| Honest backtests | After charges and tax, beside the index and a no-timing twin; sweeps report a deflated Sharpe and the odds the winner was picked by luck | Survivorship-free stock lists |
 | Paper trading | Daily investing and the intraday desk, from a scheduled function | Fills from 5-minute bars flatter liquidity |
-| Portfolio management | Fixed-mix and trend plans over a few ETFs | Your actual holdings, goals, risk profile, construction, drift bands, tax-aware rebalancing |
-| LLM roles | Three, veto or shrink only, any provider, every prompt and reply journalled | A role that reads text, which is what LLMs are evidenced to do well |
-| Measuring the LLM | Every setup followed to its outcome, taken or not | A pass or fail rule set in advance, with a minimum sample |
-| Editable harness | Strategy parameters and risk limits | Prompts, roles, plans and gates as versioned files |
+| Portfolio management | Your actual holdings; drift corridors; deposits routed with no sales; a tax-year harvest plan; guided baskets | Goals and a risk profile; statement import; construction beyond fixed weights |
+| LLM roles | Four, veto, shrink or postpone only, any provider, every prompt and reply journalled | A role that reads text (filings, results), which is what LLMs are evidenced to do well |
+| Measuring the LLM | Each answer scored against the same setup without the model, with a confidence range that stays valid however often you look; promotion and demotion are automatic | Enough forward decisions to settle anything |
+| Editable harness | Policy, plans, roles, prompts and gates as files, validated against the engine's ceilings, with an id on every decision | Editing them from the dashboard; goals in the policy |
 | Bring your own keys | A Setup page that checks each key and stores it encrypted in your own database | A one-command install; a setup step for the scheduler |
-| Explaining itself | Every decision drawn as a line through its gates; a Guide page in plain words | A plain account of why the portfolio is what it is |
+| Explaining itself | Every decision drawn as a trace through its gates, with its own page; a Guide in plain words | A plain account of why the portfolio is what it is |
 
 "Anyone can use it" means anyone can run their own copy with their own keys, on paper first. It does not
 mean one website holding everyone's broker credentials: Groww's terms, the exchange's static-IP rule and
@@ -66,28 +71,28 @@ happens, in plain words, is in [`docs/how-it-works.md`](docs/how-it-works.md).
 
 ## The dashboard
 
-| Page | What it is for |
+| Place | What it is for |
 |---|---|
-| **Home** | What the portfolio is worth and how it is split, when the bot checks next, the last daily decision drawn as a line (plan, price check, LLM check, orders), what you hold, and the latest orders as a list to copy into the Groww app. |
-| **Desk** | Intraday paper trading. Every setup is one row and one line: rule, model, LLM, limits, order. A break shows who stopped it; a thinner line shows who shrank it; the end shows what it made or what skipping it was worth. Below: the model's out-of-sample report, the desk's notes, and what is still missing before real money. |
-| **Plans** | Choose a plan, test it on up to 17 years of real prices after Groww's charges and tax, then use it. Every result is shown next to holding the Nifty 50 ETF and next to holding the same ETFs with no timing. A second tab holds the intraday research tools. |
-| **Results** | The portfolio's gain or loss at each daily check, and for anything sold: net result after costs, by day and by holding. For intraday runs: win rate, profit factor, drawdown, and whether the LLM's vetoes did worse than its approvals. |
-| **Journal** | Every check, order and warning, newest first, filterable. |
-| **Guide** | How it works in plain words: the line under four outcomes, the two bots, each step of a daily check and a desk trade, and what every term on the dashboard means. |
-| **Setup** | Bring your own keys. Connect an LLM and Groww, each with a live check; see what is connected as one line; set the plan's and the desk's limits. Live trading can only be switched on where the worker runs, never from the dashboard. |
+| **Portfolio** | What it is worth and how it is split; the last daily decision drawn as a trace (plan, price check, LLM check, orders); a drift corridor for each holding; the orders to place, as a checklist; adding money; the tax year. A second tab chooses and tests the plan on up to 17 years of prices. |
+| **Lab** (paper only) | Whether each model role has earned authority, drawn as a range across a "no model" line; the intraday desk, one trace per setup; parameter sweeps; results. |
+| **Journal** | Every setup the rules proposed, what each gate did with it and what it went on to do; what the gates were worth in total; one page per decision with what it knew, what the model said and how it ended; every event and order. |
+| **Harness** | The files that shape a decision, each role's standing, and the ceilings no file can raise. |
+| **Setup** | What is connected; your keys, each with a live check; your holdings; how orders are placed; the limits; how it works in plain words. |
 
-![Desk: each setup today as a line through its gates, with the market read, the model's verdict and the LLM in use above](docs/screenshots/ai-desk.png)
+![Portfolio: the value, the daily decision as a trace, a drift corridor for each holding, the orders to place, adding money and the tax year](docs/screenshots/portfolio.png)
 
-![Home in the dark theme: the portfolio on a storm-violet panel with its engraving, and the last daily decision drawn as a line of lightning](docs/screenshots/today-dark.png)
+![Lab: whether each model role earns its place, as a range across a no-model line](docs/screenshots/lab-gates.png)
 
-![Setup: what is connected, drawn as one line, with the LLM and Groww key forms](docs/screenshots/setup.png)
+![The intraday desk in the dark theme: each setup today as a trace through its gates](docs/screenshots/desk-dark.png)
 
-Phone and dark-mode views are in [`docs/screenshots/`](docs/screenshots/). Designed with Anthropic's open-source
-`frontend-design` skill (vendored in `.claude/skills/`); the idea, palette and rationale are in
-[`docs/design.md`](docs/design.md). One picture is used everywhere: a decision drawn as a line through gates that
-can break it or thin it. Type is Anek Latin by Ek Type; words written by an LLM are always set in Literata
-italic so the model's voice is never mistaken for the rules'. Animation by [Motion](https://motion.dev), charts by
-TradingView's [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
+![One decision's own page: the sentence, the trace, what the model said and what was known](docs/screenshots/decision.png)
+
+Phone views and the other pages are in [`docs/screenshots/`](docs/screenshots/). Designed with Anthropic's open-source
+`frontend-design` skill (vendored in `.claude/skills/`); the idea, the measured palette and the rationale are in
+[`docs/design.md`](docs/design.md). A decision is always drawn the same way: a conductor through gates that can
+narrow it, hold it or break it, and never widen it. Type is Anek Latin by Ek Type; words written by an LLM are
+always set in Literata so the model's voice is never mistaken for the rules'. Animation by
+[Motion](https://motion.dev), charts by TradingView's [Lightweight Charts](https://github.com/tradingview/lightweight-charts).
 
 ## Run it on one machine (no cloud, no broker account)
 
@@ -161,7 +166,7 @@ Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=t
 
 ```
 worker/      Python package: daily and intraday strategies, backtesters, paper and Groww brokers,
-             reviewers, the serverless entry point, the desk, the key store, local API, CLI. 196 tests.
+             reviewers, the serverless entry point, the desk, the harness and its gates, the key store, local API, CLI. 289 tests.
 dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
              api/worker.py is the Python function that runs the worker on Vercel
 supabase/    Postgres schema and the pg_cron / pg_net / Vault scheduler

@@ -17,7 +17,7 @@ const NAMES: Record<string, string> = {
   flatten_at: "flat-by time", entry_window: "trading hours", symbols: "stocks", live_trading_enabled: "live trading",
 };
 
-export default function SettingsView({ control, refresh, go }: { control?: Control; refresh: () => void; go?: (page: "lab" | "today") => void }) {
+export default function SettingsView({ control, refresh, go }: { control?: Control; refresh: () => void; go?: (to: string) => void }) {
   const eff = control?.effective_settings;
   const catalog = control?.strategy_catalog ?? [];
   const [draft, setDraft] = useState<Editable | null>(null);
@@ -71,7 +71,7 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
       </div>
 
       <div className="split even" style={{ alignItems: "start" }}>
-        <Section title="Investing" aside={<Button size="sm" onClick={() => go?.("lab")}>Change plan</Button>}>
+        <Section title="Investing" aside={<Button size="sm" onClick={() => go?.("/portfolio/plan")}>Change plan</Button>}>
           <dl className="facts">
             <dt>Plan</dt><dd>{planName(control?.invest_settings?.strategy ?? hb?.strategy ?? "core_mix")}</dd>
             <dt>Daily check</dt><dd>{hb?.portfolio?.run_at ?? "15:10"} IST on trading days</dd>
@@ -86,7 +86,7 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
 
       <div>
         <h2 style={{ fontSize: 26 }}>Desk limits</h2>
-        <p className="lede" style={{ fontSize: 16 }}>Used by the intraday desk and the intraday tests in Plans. Changes apply within a few seconds.</p>
+        <p className="lede" style={{ fontSize: 16 }}>Used by the intraday desk and the sweeps in the Lab. Changes apply within a few seconds.</p>
       </div>
 
       <div className="notices">

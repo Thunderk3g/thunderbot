@@ -62,6 +62,8 @@ export type DeskDecision = {
   prob: number | null; expected_r: number | null; why: string; verdict: "take" | "skip" | ""; by: string; note: string;
   flags: string[]; confidence?: number; size?: number; qty?: number; status?: string; fill?: number; exit?: string;
   exit_price?: number; pnl?: number; r?: number; outcome?: "stop" | "target" | "eod"; error?: string;
+  /** While a role is only watching, `said` and `asked_size` are what it answered and `size` is what was applied (1). */
+  stage?: "shadow" | "active"; said?: "take" | "skip"; asked_size?: number;
 };
 export type DeskPosition = {
   symbol: string; side: Side; qty: number; entry: number; stop: number; target: number; opened_at: string;
@@ -80,6 +82,7 @@ export type AIDesk = {
   curve: [string, number][]; llm: { on: boolean; provider: string; model: string | null };
   limits: { capital: number; risk_per_trade_pct: number; max_daily_loss_pct: number; max_open_positions: number; max_trades_per_day: number; entry_window: string; flatten_at: string };
   params: { strict?: number; min_prob?: number; min_stop_pct?: number }; universe: number; feed_error: string | null;
+  harness_id?: string; memory_mode?: "journal_only" | "inject"; stage?: "shadow" | "active";
 };
 export type GroupStats = { n: number; win_pct: number | null; avg_r: number | null; total_r: number; t: number | null; floor?: number };
 export type ModelSummary = {
@@ -148,12 +151,17 @@ export type BacktestResult = {
   strategy: string; strategy_params: Record<string, number>; data_note: string;
 };
 export type SweepRow = {
-  params: Record<string, number>; robust: boolean;
+  params: Record<string, number>;
   in_sample: Record<string, number | null>; out_of_sample: Record<string, number | null>;
+  /** Annualised Sharpe of the daily returns, and its deflated value: the chance it is above zero once
+   *  every setting ever tried on this data is counted. Older results carry `robust` instead. */
+  sharpe?: number | null; dsr?: number | null; robust?: boolean;
 };
 export type SweepResult = {
   strategy: string; axes: { name: string; values: number[] }[]; rows: SweepRow[]; split_date: string;
-  in_sample_fraction: number; data_note: string; robust_count: number;
+  in_sample_fraction: number; data_note: string; robust_count?: number;
+  /** Settings tried on this data so far, across every sweep; the probability the winner was picked by luck; a verdict in words. */
+  trials?: number; pbo?: number | null; blocks?: number; verdict?: string;
 };
 export type InvestMetrics = {
   cagr_pct: number; total_return_pct: number; volatility_pct: number; sharpe: number | null; max_drawdown_pct: number;

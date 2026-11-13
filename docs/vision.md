@@ -64,15 +64,15 @@ switch. Editing the harness can change what is proposed. It cannot change what i
 
 | Pillar | Today | Gap to the idea |
 |---|---|---|
-| Honest backtesting | Daily plans after Groww charges and asset-class tax, with a benchmark and a no-timing twin; walk-forward ML report with a worded verdict | Parameter sweeps use one train/test split with no correction for trying many settings; stock plans use today's index members (survivorship bias) |
-| Paper trading | Daily investing and the intraday AI desk both run from a scheduled function, state in Postgres | Works; fills are simulated from 5-minute Yahoo bars, so they are optimistic about liquidity |
-| Portfolio management | Fixed-mix and trend plans over three or four ETFs | No view of what the owner already holds, no goals, no risk profile, no portfolio construction beyond equal or fixed weights, no tax-aware rebalancing, no drift bands |
-| LLM roles | Signal reviewer, intraday trader, rebalance checker; all veto or shrink only; every role works with Claude or any OpenAI-compatible provider; prompts and replies journalled | No role yet does the thing LLMs are best evidenced for (reading text) |
-| Measuring the LLM | Every setup is followed to its outcome whether taken or not; vetoed and approved signals compared by average R | No pass or fail gate decided in advance; no minimum sample; no control for the model changing under a fixed name |
-| Editable harness | Strategy parameters and risk limits editable in the dashboard | Prompts, roles, plans and gates are source code; no versioning of a harness as a unit; no way to compare two harnesses on the same forward data |
+| Honest backtesting | Daily plans after Groww charges and asset-class tax, with a benchmark and a no-timing twin; sweeps count every setting ever tried on the data, report a deflated Sharpe and the probability the winner was picked by luck | Stock plans use today's index members (survivorship bias) |
+| Paper trading | Daily investing and the intraday desk both run from a scheduled function, state in Postgres | Fills are simulated from 5-minute Yahoo bars, so they are optimistic about liquidity |
+| Portfolio management | Reads actual holdings (from Groww or a typed list); a drift corridor per holding; deposits routed to the furthest-below-target holding with no sales; a tax-year harvest plan that avoids a same-day round trip; guided baskets the owner places by hand | No goals or risk profile; no statement (PDF) import; no construction beyond fixed weights; no iNAV check on ETF orders (no data source) |
+| LLM roles | Four roles behind one adapter, any provider; each can only veto, shrink or postpone; prompts and replies journalled with the model id and the cost of the call | No role yet does the thing LLMs are best evidenced for (reading filings and results) |
+| Measuring the LLM | Each answer scored against the same setup with the model left out, after charges and call cost, inside a confidence sequence that stays valid under daily peeking; a role is obeyed only after it clears the gate and is demoted automatically if it turns into a drag | The intraday desk produces the only scored decisions, on too little data to settle anything soon |
+| Editable harness | Policy, plans, roles, prompts and gates are files, validated against the engine's ceilings; a content id is stamped on every decision; model memory is written down, not fed back, unless the harness says otherwise | Files are edited on disk, not in the dashboard; no goals in the policy |
 | Bring your own keys | A Setup page: paste an LLM key and a Groww key, each is checked live and stored encrypted in the install's own database; nothing stored there can enable real orders | No one-command install; the scheduler is still set up by hand; long-running workers read saved keys only at start |
-| Explaining itself | Every decision is drawn as a line through its gates, showing who stopped or shrank it; words an LLM wrote are set in their own typeface; a Guide page explains each step and term | No account of why the portfolio is what it is; no page per past decision |
-| Live trading | Engine with broker-side stops, static-IP check, order throttle, daily login confirmation | Not yet run with real money; the long-running engine keeps positions in memory only; delivery orders do not handle partial fills |
+| Explaining itself | Every decision is drawn as a trace through its gates and has its own page; words an LLM wrote are set in their own typeface; a Guide explains each step and term | No account of why the portfolio is what it is |
+| Live trading | Paper, guided basket and automated modes; engine with broker-side stops, static-IP check, order throttle, daily login confirmation; engine state survives a restart; partial fills are booked | Not yet run with real money |
 
 ## Bring your own keys
 
@@ -99,20 +99,19 @@ whether distributing software makes its author a provider. Sources are in
 
 ## Stages
 
-1. **Make it legible.** Done in the main: a Guide page, and every decision drawn as a line through its
-   gates. Still to do: one page per past decision.
-2. **Make it one person's in ten minutes.** Done in the main: a Setup page for the LLM key (any provider)
-   and the Groww key, with a live check of each, and one provider interface for every LLM role. Still to
-   do: a one-command install.
-3. **Make the harness a thing.** Policy, roles and gates as versioned files; prompts out of the source;
-   a harness has an id that is stamped on every decision it makes.
-4. **Make the gates real.** Pre-registered pass or fail rules for plans and for each LLM role, enforced
-   by the engine before authority widens.
-5. **Make it a portfolio manager.** Import what the owner holds; goals and a risk profile; construction
-   methods that beat equal weight out of sample or are not used; drift bands; tax-aware rebalancing;
-   a monthly letter that explains the portfolio.
-6. **Give the LLM its evidenced job.** Reading filings, results and news into structured, dated facts
-   that rules can use and the journal can score.
+1. **Make it legible.** Done: a Guide, every decision drawn as a trace, and one page per decision.
+2. **Make it one person's in ten minutes.** Mostly done: a Setup page for the LLM and Groww keys with
+   live checks, and one adapter for every LLM role. Still to do: a one-command install.
+3. **Make the harness a thing.** Done: policy, plans, roles and gates as versioned files, prompts out of
+   the source, an id stamped on every decision. Still to do: editing from the dashboard.
+4. **Make the gates real.** Done: each role is scored against its own absence with an anytime-valid
+   confidence sequence, and promoted or demoted by rule. Sweeps are deflated for every trial.
+5. **Make it a portfolio manager.** Partly done: actual holdings, drift corridors, deposit routing, a
+   tax-year plan, guided baskets. Still to do: goals and a risk profile, statement import, a monthly
+   letter that explains the portfolio.
+6. **Give the LLM its evidenced job.** Not started: reading exchange filings, results and corporate
+   actions into structured, dated facts that rules can use and the journal can score. This would also be
+   the testbed with enough forward events to settle whether a model role helps.
 
 ## Brief for a reviewer
 
@@ -166,19 +165,17 @@ what you inferred by reading.
 - The Setup page stores keys encrypted with a key derived from `TB_SECRET_KEY`, or from the database's
   service key when that is unset. With the fallback, anyone holding the service key can decrypt them; a
   database dump alone cannot. Set `TB_SECRET_KEY` for real separation.
-- Parameter sweeps (`jobs.py`, `sweep`) split history once, 70/30, and flag a row "robust" with no
-  correction for the number of settings tried.
-- `thunderbot invest-backtest --years 18` shows a flat benchmark, because NIFTYBEES has no Yahoo history
-  before January 2009 and the benchmark is only bought on the first day. The dashboard caps at 17 years.
-- In daily investing, "stop" sells every holding (`invest.py`), which realises tax; for a portfolio
-  the safer meaning is "stop trading and keep what is held".
-- Live delivery orders build a reference id from the first six characters of the symbol
-  (`invest.py`, `_live_fill`); symbols such as `M&M` put a character in it that the broker's format
-  may reject. Unverified against a live account.
-- A live delivery order that fills in part is treated as not filled, so the stored portfolio can drift
-  from the broker's.
-- The long-running intraday engine (`engine.py`) holds positions and the day's loss in memory; a
-  restart mid-session forgets both. The serverless desk (`ai/runner.py`) keeps its state in the database
-  and does not have this problem.
+- The tax-year planner assumes a same-day sale and rebuy of one ticker is netted as intraday and books
+  nothing, and offers a next-session rebuy or a swap into a twin ETF. That treatment, and how
+  anti-avoidance rules apply to deliberate harvesting, were not checked against primary sources.
+- There is no iNAV check before an ETF order: the Groww SDK exposes no iNAV and no free source was
+  verified, so none was faked.
+- The confidence sequence clips each setup's result to fixed bounds in R before scoring. A fat-tailed
+  winner beyond the bound is under-counted.
+- Guided baskets are reconciled against holdings the owner types in or Groww reports; nothing checks
+  the price the owner actually got.
 - The intraday model trains on about 60 days of 5-minute bars, the most Yahoo serves. Its own report
   says it has found no edge.
+- Stock plans (momentum) use today's index members, so their backtests carry survivorship bias.
+- No real order has ever been placed, and no call to a real LLM provider or to Groww has succeeded from
+  the development environment.

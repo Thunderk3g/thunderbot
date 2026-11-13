@@ -3,10 +3,11 @@ import { Anek_Latin, Literata } from "next/font/google";
 import "./globals.css";
 
 // Two voices (docs/design.md). Anek Latin, by Ek Type in Mumbai, is the interface: its width axis gives the
-// narrow, heavy money figures and the wide page titles. Literata italic is used for one thing only: words
-// that an LLM wrote, so the model's voice can never be mistaken for the rules'.
+// narrow, heavy money figures and the wide page titles. Literata is used for one thing only: words that an
+// LLM wrote (italic for a line or two, upright in a callout for a longer passage), so the model's voice can
+// never be mistaken for the rules'.
 const anek = Anek_Latin({ subsets: ["latin", "latin-ext"], axes: ["wdth"], variable: "--font-anek", display: "swap" });
-const literata = Literata({ subsets: ["latin", "latin-ext"], style: ["italic"], axes: ["opsz"], variable: "--font-literata", display: "swap" });
+const literata = Literata({ subsets: ["latin", "latin-ext"], style: ["normal", "italic"], axes: ["opsz"], variable: "--font-literata", display: "swap" });
 
 export const metadata: Metadata = {
   title: "Thunderbot",
