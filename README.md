@@ -139,6 +139,10 @@ Laptop or Mumbai VPS (static IP, registered with Groww)     Vercel            Su
   thunderbot invest --live (service)    ◄── control ──     dashboard ───────►
 ```
 
+To deploy: [`ref.md`](ref.md) lists the Supabase and Vercel steps in order (all seven migrations in
+`supabase/migrations/`, the Vault secrets, the Vercel environment). Vercel deploys `main`; migrations are
+not applied by a push, so run `supabase db push` whenever a new file appears there.
+
 See [`docs/runbook.md`](docs/runbook.md) for the staged rollout and
 [`docs/architecture.md`](docs/architecture.md) for the design.
 
@@ -165,11 +169,15 @@ Live trading needs three explicit opt-ins on the VPS: `TB_LIVE_TRADING_ENABLED=t
 ## Repository
 
 ```
-worker/      Python package: daily and intraday strategies, backtesters, paper and Groww brokers,
-             reviewers, the serverless entry point, the desk, the harness and its gates, the key store, local API, CLI. 289 tests.
-dashboard/   Next.js cockpit (API routes keep the service key server-side; Basic Auth)
-             api/worker.py is the Python function that runs the worker on Vercel
-supabase/    Postgres schema and the pg_cron / pg_net / Vault scheduler
-docs/        no-server setup, runbook, architecture
-reports/     the research behind the design, with sources; notes in research_notes/
+worker/          Python package: daily and intraday strategies, backtesters, paper and Groww brokers,
+                 reviewers, the serverless entry point, the desk, the harness and its gates, the key store,
+                 local API, CLI. 246 tests.
+dashboard/       Next.js cockpit (API routes keep the service key server-side; Basic Auth)
+                 api/worker.py is the Python function that runs the worker on Vercel
+supabase/        Postgres schema (seven migrations) and the pg_cron / pg_net / Vault scheduler
+ref.md           deploy reference: Supabase and Vercel, step by step
+docs/            vision, how-it-works, harness, ai-desk, no-server setup, runbook, architecture, design,
+                 research report, screenshots
+reports/         the research behind the design, with sources
+research_notes/  working notes behind the reports
 ```
