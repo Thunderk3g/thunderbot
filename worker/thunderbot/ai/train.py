@@ -98,7 +98,7 @@ def train(samples: list[Sample], progress: Callable[[float], Any] = lambda p: No
     calib = gbm.platt(oos_z[seen], y[seen])
     oos_p = 1.0 / (1.0 + np.exp(-(calib[0] * oos_z[seen] + calib[1])))
     oos_y, oos_r = y[seen], r[seen]
-    oos = [s for s, ok in zip(samples, seen) if ok]
+    oos = [s for s, ok in zip(samples, seen, strict=True) if ok]
 
     # Expected result as a straight line in the score, fitted on out-of-sample trades only. Strict
     # mode trades above the score where that line crosses zero, if it ever does within the scores seen.
@@ -126,7 +126,7 @@ def train(samples: list[Sample], progress: Callable[[float], Any] = lambda p: No
                             "avg_r": round(float(oos_r[chunk].mean()), 3), "n": int(len(chunk))})
     curve_all: dict[str, float] = defaultdict(float)
     curve_model: dict[str, float] = defaultdict(float)
-    for s, p in zip(oos, oos_p):
+    for s, p in zip(oos, oos_p, strict=True):
         curve_all[s.day.isoformat()] += s.r_net
         curve_model[s.day.isoformat()] += s.r_net if p >= learn else 0.0
     run_all = run_model = 0.0

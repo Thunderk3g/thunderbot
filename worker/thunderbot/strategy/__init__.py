@@ -3,8 +3,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from .base import Strategy
 from .ai import AIEnsemble
+from .base import Strategy
 from .ema_pullback import EMAPullback
 from .momentum import MomentumBurst
 from .orb import OpeningRangeBreakout

@@ -17,11 +17,16 @@ from thunderbot.clock import IST
 from thunderbot.config import Settings
 from thunderbot.costs import CostModel
 from thunderbot.data import synthetic_history
-from thunderbot.llm.trader import ChatClient, ChatSignalFilter, build_trader_message, extract_json, provider_of
+from thunderbot.llm.trader import (
+    ChatClient,
+    ChatSignalFilter,
+    build_trader_message,
+    extract_json,
+    provider_of,
+)
 from thunderbot.llm.types import LLMDecision, ReviewContext
 from thunderbot.models import Candle, Product, Side, Signal
 from thunderbot.store import CompositeStore, SQLiteStore
-from thunderbot.strategy import build_strategy
 from thunderbot.strategy.ai import widen
 
 from .conftest import DAY, bar, breakout_session, flat_session, ts
