@@ -135,8 +135,9 @@ downstream of the risk limits exists.
 | To change | Go to |
 |---|---|
 | Which plan runs, its parameters | Dashboard → Plans |
-| Risk per trade, daily loss limit, position caps | Dashboard → Settings |
-| Which LLM is used | `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` where the worker runs |
+| Risk per trade, daily loss limit, position caps | Dashboard → Setup → Desk limits |
+| Which LLM is used | Dashboard → Setup → LLM (or `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` where the worker runs) |
+| The Groww key | Dashboard → Setup → Groww (real orders still need the switches on your own machine) |
 | What the LLM is told | `TRADER_PROMPT` in `llm/trader.py`, `SYSTEM_PROMPT` in `llm/rebalance.py` |
 | A new intraday rule set | A class in `worker/thunderbot/strategy/`, added to `make_generators` in `strategy/ai.py` |
 | A new daily plan | A class in `daily.py` with a `target()` method, added to `DAILY_CATALOG` |

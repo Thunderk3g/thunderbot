@@ -3,17 +3,18 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { dayTime, hhmm, inr, num, signedInr } from "@/lib/format";
-import { workerAlive, type EventRow, type LiveState, type Plan, type Position, type SignalCard } from "@/lib/types";
+import { workerAlive, type EventRow, type LiveState, type Plan, type Portfolio, type Position, type SignalCard } from "@/lib/types";
 import { asset, slices } from "@/lib/assets";
 import { wakeWorker } from "@/lib/usePoll";
 import DayStrip from "./DayStrip";
+import { Guilloche, Line, type Gate, type LineEnd } from "./Line";
 import { AnimatedNumber, Button, Empty, MixBar, Section, Skeleton, spring } from "./ui";
 
 const ALERT_KINDS = new Set(["error", "exit_failed", "stop_failed", "halt", "kill_switch", "order_rejected", "unmanaged_position"]);
 const tone = (n: number) => (n > 0 ? "gain" : n < 0 ? "loss" : "");
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-type Go = (page: "today" | "lab" | "results" | "log" | "settings") => void;
+type Go = (page: "today" | "lab" | "results" | "log" | "settings" | "guide" | "desk") => void;
 
 export default function LiveView({ state, act, refresh, go }: { state: LiveState | null; act: (a: string) => Promise<void>; refresh?: () => void; go?: Go }) {
   if (!state) return <Loading />;
@@ -170,8 +171,9 @@ function GetStarted({ control, refresh, go, act }: { control: LiveState["control
   return (
     <div className="page">
       <section className="slab" aria-label="Get started">
+        <Guilloche />
         <div>
-          <h1 style={{ maxWidth: "18ch" }}>Three steps and your bot is running.</h1>
+          <h1>Three steps and your bot is running.</h1>
           <p className="hero-line">
             Thunderbot holds a few index and gold ETFs for you and checks them once a day at 15:10 IST. It starts in paper mode:
             live prices, pretend money.
@@ -197,7 +199,10 @@ function GetStarted({ control, refresh, go, act }: { control: LiveState["control
       </section>
       <p className="small soft" style={{ maxWidth: "70ch" }}>
         If waking fails on your own computer, the worker isn&apos;t running there: start <code>thunderbot serve</code> and then <code>thunderbot tick</code>.
-        On Vercel, check that the deployment built the worker function. The setup guide is in <code>docs/no-server.md</code>.
+        On Vercel, check that the deployment built the worker function. Keys for an LLM and for Groww go in{" "}
+        <button type="button" onClick={() => go?.("settings")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Setup</button>;
+        how it all works is in the{" "}
+        <button type="button" onClick={() => go?.("guide")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Guide</button>.
       </p>
     </div>
   );
@@ -287,6 +292,7 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
       </div>
 
       <section className="slab" aria-label="Your portfolio">
+        <Guilloche />
         <div className="slab-top">
           <div>
             <div className="hero-figure"><AnimatedNumber value={p.value} format={(n) => inr(n)} /></div>
@@ -307,6 +313,10 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
           ? target && <MixBar slices={slices(target)} caption={`${strategyName} will hold`} />
           : <MixBar slices={slices(held)} caption="How it is split" />}
       </section>
+
+      <Section title={p.last_plan ? "The last decision" : "The next decision"} aside={<p>Each daily check runs left to right. A check can hold the plan back; it can never change an order.</p>}>
+        <div className="stage"><DecisionLine p={p} strategyName={strategyName} llm={!!control.effective_settings?.env_only.llm_configured} next={`${next.day}, ${p.run_at}`} mode={hb.mode} /></div>
+      </Section>
 
       <div className="split">
         <div className="page" style={{ gap: 44 }}>
@@ -373,6 +383,24 @@ function InvestToday({ state, act, alive, feedDown, notStarted, trading, refresh
       </div>
     </div>
   );
+}
+
+/** One daily check as a line: the plan proposes, the checks may hold it back, orders come out the end. */
+function DecisionLine({ p, strategyName, llm, next, mode }: { p: Portfolio; strategyName: string; llm: boolean; next: string; mode: string }) {
+  const plan = p.last_plan;
+  const waiting = !!p.pending || !plan;
+  const gates: Gate[] = [
+    { key: "due", label: "Decision day", state: plan ? "pass" : "wait", value: plan ? dayTime(plan.at) : `next check ${next}` },
+    { key: "prices", label: "Price check", state: waiting ? "wait" : "pass", value: waiting ? (p.missed ? "started too late" : "runs first") : plan?.late ? "closing prices" : "prices looked right" },
+    llm
+      ? { key: "llm", label: "LLM check", state: waiting ? "wait" : "pass", value: waiting ? "may postpone a day" : "no objection" }
+      : { key: "llm", label: "LLM check", state: waiting ? "wait" : "absent", value: "none connected" },
+  ];
+  const orders = plan?.orders.length ?? 0;
+  const end: LineEnd = waiting
+    ? { label: "Orders", value: p.pending ? `decided again ${next}` : "none yet" }
+    : { label: orders ? `${orders} ${orders === 1 ? "order" : "orders"}` : "No trades needed", value: orders ? (mode === "live" ? "placed on Groww" : "filled on paper") : "holdings already match" };
+  return <Line size="lg" source={{ label: "Plan", value: strategyName }} gates={gates} end={end} label="The last daily decision" />;
 }
 
 function Notice({ kind, children, action }: { kind: "stop" | "caution" | "info"; children: React.ReactNode; action?: React.ReactNode }) {

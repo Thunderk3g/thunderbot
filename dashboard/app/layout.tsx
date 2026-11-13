@@ -1,23 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Bricolage_Grotesque } from "next/font/google";
+import { Anek_Latin, Literata } from "next/font/google";
 import "./globals.css";
 
-// One variable family for everything (docs/design.md). The width and optical-size axes give the narrow,
-// heavy money figures; latin-ext carries the rupee sign.
-const bricolage = Bricolage_Grotesque({
-  subsets: ["latin", "latin-ext"], axes: ["opsz", "wdth"], variable: "--font-bricolage", display: "swap",
-});
+// Two voices (docs/design.md). Anek Latin, by Ek Type in Mumbai, is the interface: its width axis gives the
+// narrow, heavy money figures and the wide page titles. Literata italic is used for one thing only: words
+// that an LLM wrote, so the model's voice can never be mistaken for the rules'.
+const anek = Anek_Latin({ subsets: ["latin", "latin-ext"], axes: ["wdth"], variable: "--font-anek", display: "swap" });
+const literata = Literata({ subsets: ["latin", "latin-ext"], style: ["italic"], axes: ["opsz"], variable: "--font-literata", display: "swap" });
 
 export const metadata: Metadata = {
   title: "Thunderbot",
-  description: "Your ETF investing bot: what you hold, when it acts next, and what to do now",
+  description: "A portfolio manager you run yourself: what you hold, what it will do next, and why",
   robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#eef2f5" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a1c28" },
+    { media: "(prefers-color-scheme: light)", color: "#ece9f2" },
+    { media: "(prefers-color-scheme: dark)", color: "#140d22" },
   ],
 };
 
@@ -26,7 +26,7 @@ const themeScript = `try{var t=localStorage.getItem("tb-theme");if(t)document.do
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={bricolage.variable} suppressHydrationWarning>
+    <html lang="en" className={`${anek.variable} ${literata.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>

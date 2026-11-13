@@ -3,8 +3,8 @@
 import { AnimatePresence, motion } from "motion/react";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { dayTime, inr } from "@/lib/format";
-import { workerAlive, type Control, type EffectiveSettings } from "@/lib/types";
+import { inr } from "@/lib/format";
+import type { Control, EffectiveSettings } from "@/lib/types";
 import { post } from "@/lib/usePoll";
 import { planName } from "./InvestLab";
 import { Button, ChipsInput, Empty, Panel, Section, Segmented, SliderField, Switch } from "./ui";
@@ -31,7 +31,7 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
   }, [baseline, draft]);
 
   if (!eff || !draft || !baseline) {
-    return <Empty title="Settings haven't loaded yet.">The worker publishes them the first time it runs. Wake it from Home.</Empty>;
+    return <Empty title="Limits haven't loaded yet.">The worker publishes them the first time it runs. Wake it from Scheduler above.</Empty>;
   }
   const hb = control?.heartbeat;
 
@@ -65,25 +65,12 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
 
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Settings and setup.</h1>
-          <p className="lede">What is connected, how the investing plan runs, and the limits for intraday research.</p>
-        </div>
+      <div>
+        <h2 style={{ fontSize: 26 }}>Plan and limits</h2>
+        <p className="lede" style={{ fontSize: 16 }}>How the investing plan runs, and the limits the desk trades inside. The worker checks every value against its own ceilings before using it.</p>
       </div>
 
       <div className="split even" style={{ alignItems: "start" }}>
-        <Section title="Is everything connected?">
-          <dl className="upnext">
-            <Check ok={workerAlive(hb)} title={hb?.scheduler === "serverless" ? "Scheduler" : "Worker"}
-              text={!hb ? "Nothing has reported in yet. Wake the worker from Home." : workerAlive(hb) ? `Calling in. Last heard ${dayTime(hb.wall_at ?? hb.at)}.` : `Silent since ${dayTime(hb.wall_at ?? hb.at)}. See docs/no-server.md, "If something is wrong".`} />
-            <Check ok={!hb?.feed || hb.feed.ok} title="Prices" text={hb?.feed ? hb.feed.message.replace(/^./, (c) => c.toUpperCase()) + "." : eff.env_only.feed === "groww" ? "Groww (official feed)." : "Yahoo Finance, free. Prices can lag the exchange."} />
-            <Check ok={!!eff.env_only.notifications} soft title="Phone alerts" text={eff.env_only.notifications ? "On: rebalances, missed runs and bad prices are sent to you." : "Set TB_NTFY_TOPIC or the Telegram variables to get them."} />
-            <Check ok={draft.llm_enabled} soft title="Reviewer" text={draft.llm_enabled ? `${eff.env_only.llm_model} checks each rebalance and can postpone it a day. It never changes an order.` : "The rules run by themselves, which is the tested setup."} />
-            <Check ok={eff.env_only.groww_configured} soft title="Groww account" text={eff.env_only.groww_configured ? "API key present." : "Not connected. Needed only for live orders."} />
-            <Check ok={eff.env_only.static_ip_configured} soft title="Static IP" text={eff.env_only.static_ip_configured ? "Configured for live orders." : "Not set. Brokers accept API orders only from an IP registered to you, so live orders stay off."} />
-          </dl>
-        </Section>
         <Section title="Investing" aside={<Button size="sm" onClick={() => go?.("lab")}>Change plan</Button>}>
           <dl className="facts">
             <dt>Plan</dt><dd>{planName(control?.invest_settings?.strategy ?? hb?.strategy ?? "core_mix")}</dd>
@@ -98,8 +85,8 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
       </div>
 
       <div>
-        <h2 style={{ fontSize: 28, letterSpacing: "-0.02em" }}>Intraday research</h2>
-        <p className="lede" style={{ fontSize: 15 }}>Used only by the intraday worker and the intraday tests in Plans. Changes apply within a few seconds; the worker checks every value against its own limits first.</p>
+        <h2 style={{ fontSize: 26 }}>Desk limits</h2>
+        <p className="lede" style={{ fontSize: 16 }}>Used by the intraday desk and the intraday tests in Plans. Changes apply within a few seconds.</p>
       </div>
 
       <div className="notices">
@@ -165,11 +152,11 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
               <div className="toggle-row"><span className="field-label">Allow intraday short selling</span><Switch checked={draft.allow_short} onChange={(v) => set("allow_short", v)} label="Allow short selling" /></div>
             </div>
           </Panel>
-          <Panel title="Reviewer">
+          <Panel title="The LLM">
             <div className="form">
               <div className="toggle-row">
-                <div><div className="field-label">Ask Claude about each signal</div><p className="hint">{eff.env_only.llm_model} can skip a trade or shrink it, never make it bigger.</p></div>
-                <Switch checked={draft.llm_enabled} onChange={(v) => set("llm_enabled", v)} label="Claude reviewer" />
+                <div><div className="field-label">Ask the LLM about each trade</div><p className="hint">{eff.env_only.llm_configured ? `${eff.env_only.llm_model} can skip a trade or shrink it, never make it bigger.` : "No LLM is connected yet. Connect one above."}</p></div>
+                <Switch checked={draft.llm_enabled} onChange={(v) => set("llm_enabled", v)} label="Ask the LLM" />
               </div>
               <AnimatePresence initial={false}>
                 {draft.llm_enabled && (
@@ -192,7 +179,7 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
 
       <section>
         <div className="section-head">
-          <h2>Set on the server only</h2>
+          <h2>Set where the worker runs</h2>
           <Button size="sm" variant="quiet" onClick={reset}>Reset everything above to the server defaults</Button>
         </div>
         <p className="soft small" style={{ marginBottom: 14, maxWidth: "64ch" }}>
@@ -219,16 +206,6 @@ export default function SettingsView({ control, refresh, go }: { control?: Contr
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
-  );
-}
-
-/** One line of the setup list. "soft" items are optional, so a missing one is neutral, not a fault. */
-function Check({ ok, soft, title, text }: { ok: boolean; soft?: boolean; title: string; text: string }) {
-  return (
-    <div>
-      <span className={`pip ${ok ? "ok" : soft ? "" : "bad"}`} />
-      <div><dt>{title}{ok ? "" : soft ? ": off" : ": needs attention"}</dt><dd>{text}</dd></div>
     </div>
   );
 }

@@ -1,11 +1,13 @@
 "use client";
 
-import { BrainCircuit, ChevronDown, LoaderCircle, OctagonX, Play, RefreshCw, Zap } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { ChevronDown, LoaderCircle, OctagonX, Play, RefreshCw, Zap } from "lucide-react";
+import { useMemo, useState } from "react";
 import { ago, inr, num, signedInr } from "@/lib/format";
+import type { SetupState } from "@/lib/setup";
 import type { AIDesk, DeskDecision, DeskPosition, GroupStats, Job, LiveState, ModelReport } from "@/lib/types";
 import { post, startJob, usePoll, wakeWorker } from "@/lib/usePoll";
 import { PnlBars, PnlCurve } from "./charts";
+import { Line, type Gate, type LineEnd } from "./Line";
 import { Button, HoldButton, Segmented, StatusDot } from "./ui";
 
 const STATUS: Record<AIDesk["status"], { tone: "on" | "off" | "idle"; text: string }> = {
@@ -42,7 +44,23 @@ const VERDICT: Record<string, { tag: string; cls: string }> = {
 const sign = (n: number | null | undefined, d = 2) => (n === null || n === undefined ? "–" : `${n > 0 ? "+" : ""}${n.toFixed(d)}`);
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "gain" : "loss");
 
-export default function DeskView({ state, refresh }: { state: LiveState | null; refresh: () => void }) {
+const STATUS_SENTENCE: Record<AIDesk["status"], string> = {
+  running: "The desk is trading on paper",
+  closing: "The desk is stopped and closing its open trades",
+  paused: "The desk is paused and only managing open trades",
+  halted: "The desk hit its daily loss limit and stopped for the day",
+  off: "The desk is off",
+  waiting: "The desk is waiting for the market to open at 09:15",
+  closed: "The market is closed",
+  no_prices: "The desk has no prices from Yahoo",
+};
+const NOT_LLM = new Set(["", "model", "desk", "risk limits"]);
+const SHORT: Record<string, string> = { orb: "Breakout", vwap_reversion: "Reversion", ema_pullback: "Pullback", momentum: "Momentum" };
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+type Go = (page: "settings" | "guide" | "lab") => void;
+
+export default function DeskView({ state, refresh, setup, go }: { state: LiveState | null; refresh: () => void; setup: SetupState | null; go?: Go }) {
   const control = state?.control;
   const desk = control?.ai_desk;
   const summary = control?.ai_model ?? null;
@@ -73,73 +91,72 @@ export default function DeskView({ state, refresh }: { state: LiveState | null; 
   const report = ai.data?.model?.report ?? null;
   const market = desk?.market ?? {};
   const strict = String(desk?.params?.strict ?? 0) as "0" | "1";
+  const llmOn = !!desk?.llm.on;
 
   return (
     <div className="desk">
-      <section className="slab desk-head">
-        <div className="desk-title">
-          <div>
-            <p className="eyebrow"><BrainCircuit size={14} aria-hidden /> AI desk · intraday · NSE cash</p>
-            <h1 className="desk-state"><StatusDot tone={status.tone} />{status.text}</h1>
-            <p className="soft small">
-              {desk ? <>Last bar {desk.bar ?? "–"} · updated {ago(desk.at)} · {desk.universe} stocks watched · {desk.limits.entry_window} entries, flat by {desk.limits.flatten_at}</>
-                : "The worker has not reported on the desk yet. Press Start, or Run a bar now."}
-            </p>
-          </div>
-          <div className="desk-actions">
-            {enabled
-              ? <HoldButton onConfirm={stop}><OctagonX size={15} />Hold to stop</HoldButton>
-              : <Button variant="primary" onClick={start} disabled={busy !== null}>{busy === "start" ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}Start paper trading</Button>}
-            <Button onClick={wake} disabled={busy !== null} title="Run the worker once now instead of waiting for the next 5-minute call">
-              {busy === "wake" ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}Run a bar now
-            </Button>
-          </div>
+      <div className="desk-top">
+        <div>
+          <h1>Desk</h1>
+          <p className="statement">
+            <StatusDot tone={status.tone} />{" "}
+            {desk ? STATUS_SENTENCE[desk.status] ?? status.text : "The desk has not run yet"}.{" "}
+            {desk && (stats?.setups ?? 0) > 0
+              ? <><b className={tone(dayPnl)}>{signedInr(dayPnl)}</b> after costs today, from {plural(stats?.trades ?? 0, "trade")} and {plural(stats?.setups ?? 0, "setup")}.</>
+              : desk ? "No setups yet today." : "Press Start, or run one bar now."}
+          </p>
+          <p className="sub-statement">
+            {desk
+              ? <>Intraday, on paper, in {desk.universe} stocks. It looks for setups every five minutes from {desk.limits.entry_window.replace("-", " to ")} and is flat by {desk.limits.flatten_at}. Last bar {desk.bar ?? "none yet"}, updated {ago(desk.at)}.</>
+              : "Intraday paper trading: four rule sets propose trades, a small model scores them, an LLM takes or skips, and the risk limits have the last word."}
+          </p>
         </div>
-
-        <dl className="desk-kpis">
-          <div className="kpi main"><dt>Today, after costs</dt><dd className={tone(dayPnl)}>{signedInr(dayPnl)}</dd></div>
-          <div className="kpi"><dt>Closed</dt><dd className={tone(stats?.realized)}>{signedInr(stats?.realized ?? 0)}</dd></div>
-          <div className="kpi"><dt>Open</dt><dd className={tone(stats?.unrealized)}>{signedInr(stats?.unrealized ?? 0)}</dd></div>
-          <div className="kpi"><dt>Trades</dt><dd>{stats?.trades ?? 0}<small> / {desk?.limits.max_trades_per_day ?? "–"}</small></dd></div>
-          <div className="kpi"><dt>Won · lost</dt><dd>{stats?.wins ?? 0} · {stats?.losses ?? 0}</dd></div>
-          <div className="kpi"><dt>Setups seen</dt><dd>{stats?.setups ?? 0}</dd></div>
-          <div className="kpi"><dt>Charges</dt><dd>{inr(stats?.costs ?? 0)}</dd></div>
-        </dl>
-
-        <div className="desk-chips">
-          <span className="pill"><b>Market</b>{REGIME[market.label ?? "unknown"] ?? market.label}
-            {market.index_ret_open_pct !== undefined && <em className={tone(market.index_ret_open_pct)}>Nifty {sign(market.index_ret_open_pct)}%</em>}
-            {market.breadth_up_pct !== undefined && <em>{market.breadth_up_pct}% of stocks up</em>}
-          </span>
-          <span className="pill"><b>Model</b>{summary ? <>{VERDICT[summary.verdict]?.tag ?? summary.verdict}<em>AUC {summary.auc?.toFixed(2) ?? "–"}</em><em>trained {ago(summary.trained_at)}</em></>
-            : training ? "Training now" : "Not trained yet"}</span>
-          <span className="pill"><b>Trader</b>{desk?.llm.on ? <>{desk.llm.provider}<em>{desk.llm.model}</em></> : <>No LLM connected<em>the model decides alone</em></>}</span>
-          <span className="pill"><b>Risk</b>{desk ? <>{desk.limits.risk_per_trade_pct}% a trade<em>stop at −{desk.limits.max_daily_loss_pct}% a day</em><em>max {desk.limits.max_open_positions} open</em></> : "–"}</span>
+        <div className="actions">
+          {enabled
+            ? <HoldButton onConfirm={stop}><OctagonX size={15} />Hold to stop</HoldButton>
+            : <Button variant="go" onClick={start} disabled={busy !== null}>{busy === "start" ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}Start paper trading</Button>}
+          <Button onClick={wake} disabled={busy !== null} title="Run the worker once now instead of waiting for the next 5-minute call">
+            {busy === "wake" ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}Run a bar now
+          </Button>
         </div>
-      </section>
+      </div>
 
-      {error && <div className="notice stop"><span className="grow">{error}</span></div>}
-      {desk?.feed_error && <div className="notice stop"><span className="grow">{desk.feed_error}</span></div>}
-      {stats?.halted && <div className="notice stop"><span className="grow">{stats.halt_reason || "Trading is halted for the day."}</span></div>}
-      {desk && !desk.llm.on && (
-        <div className="notice caution"><span className="grow">
-          No LLM is connected, so setups that pass the model are taken without a second opinion. Add <code>LLM_API_KEY</code>, <code>LLM_BASE_URL</code> and <code>LLM_MODEL</code> to
-          the Vercel project (the same three your GrokBot uses) and redeploy.
-        </span></div>
-      )}
+      <dl className="reads">
+        <div><dt>Market</dt><dd>{REGIME[market.label ?? "unknown"] ?? market.label}
+          <small>{market.index_ret_open_pct !== undefined ? <>Nifty <span className={tone(market.index_ret_open_pct)}>{sign(market.index_ret_open_pct)}%</span></> : "no read yet"}{market.breadth_up_pct !== undefined && `, ${market.breadth_up_pct}% of stocks up`}</small></dd></div>
+        <div><dt>Model</dt><dd>{summary ? VERDICT[summary.verdict]?.tag ?? summary.verdict : training ? "Training now" : "Not trained yet"}
+          <small>{summary ? `ranks at ${summary.auc?.toFixed(2) ?? "–"} where 0.50 is a coin toss; trained ${ago(summary.trained_at)}` : "trains on the last 60 days of bars"}</small></dd></div>
+        <div><dt>LLM</dt><dd>{llmOn ? desk!.llm.provider : "Not connected"}
+          <small>{llmOn ? desk!.llm.model : "the model decides alone"}</small></dd></div>
+        <div><dt>Limits</dt><dd>{desk ? `${desk.limits.risk_per_trade_pct}% risked a trade` : "–"}
+          <small>{desk ? `stops at −${desk.limits.max_daily_loss_pct}% a day, ${desk.limits.max_open_positions} open at most, ${stats?.trades ?? 0} of ${desk.limits.max_trades_per_day} trades used` : "set in Setup"}</small></dd></div>
+      </dl>
+
+      <div className="notices">
+        {error && <div className="notice stop"><span className="grow">{error}</span></div>}
+        {desk?.feed_error && <div className="notice stop"><span className="grow">{desk.feed_error}</span></div>}
+        {stats?.halted && <div className="notice stop"><span className="grow">{stats.halt_reason || "Trading is halted for the day."}</span></div>}
+        {desk && !llmOn && (
+          <div className="notice caution">
+            <span className="grow">No LLM is connected, so a setup that passes the model is taken without a second opinion.</span>
+            <Button size="sm" onClick={() => go?.("settings")}>Connect one in Setup</Button>
+          </div>
+        )}
+      </div>
 
       <div className="desk-grid">
         <div className="desk-main">
-          <Block title="Open positions" aside={desk?.positions.length ? `${desk.positions.length} open` : undefined}>
-            {desk?.positions.length ? <Positions rows={desk.positions} /> : <p className="quiet">Nothing open.{desk?.pending.length ? ` ${desk.pending.length} entry waiting for the next bar.` : ""}</p>}
-          </Block>
-
-          <Block title="Decision tape" aside="Every setup today: what the model scored, what the trader decided, how it ended">
-            {desk?.decisions.length ? <Tape rows={desk.decisions} /> : (
-              <p className="quiet">{enabled ? "No setups yet today. The desk checks every 5 minutes between " + (desk?.limits.entry_window ?? "09:30-14:30") + " IST." : "The desk is off. Start it to see setups here."}</p>
+          <Block title="Today's setups" aside="Each setup runs left to right. A gate can break the line or thin it, never thicken it.">
+            {desk?.decisions.length ? <Tape rows={desk.decisions} llmOn={llmOn} /> : (
+              <p className="quiet-line">{enabled ? `No setups yet today. The desk checks every five minutes between ${(desk?.limits.entry_window ?? "09:30-14:30").replace("-", " and ")} IST.` : "The desk is off. Start it to see setups here."}</p>
             )}
           </Block>
-          <Block title="The model" aside={
+
+          <Block title="Open positions" aside={desk?.positions.length ? `${desk.positions.length} open` : undefined}>
+            {desk?.positions.length ? <Positions rows={desk.positions} /> : <p className="quiet-line">Nothing open.{desk?.pending.length ? ` ${desk.pending.length} entry waiting for the next bar.` : ""}</p>}
+          </Block>
+
+          <Block title="The model's report" aside={
             <span className="aside-actions">
               <Segmented label="How strict" value={strict} onChange={setStrict}
                 options={[{ value: "0", label: "Learning" }, { value: "1", label: "Strict" }]} />
@@ -153,10 +170,10 @@ export default function DeskView({ state, refresh }: { state: LiveState | null; 
 
         <aside className="desk-side">
           <Block title="Today's P&L">
-            {curve.length > 1 ? <PnlCurve points={curve} intraday height={170} label="P&L" /> : <p className="quiet">The line starts with the first bar the desk trades.</p>}
+            {curve.length > 1 ? <PnlCurve points={curve} intraday height={170} label="P&L" /> : <p className="quiet-line">The line starts with the first bar the desk trades.</p>}
           </Block>
           <Block title="Watchlist" aside={desk?.watch.length ? "by move today" : undefined}>
-            {desk?.watch.length ? <Watch desk={desk} /> : <p className="quiet">Prices appear once the desk has run a bar in market hours.</p>}
+            {desk?.watch.length ? <Watch desk={desk} /> : <p className="quiet-line">Prices appear once the desk has run a bar in market hours.</p>}
           </Block>
           <Block title="Desk notes" aside={control?.ai_memory?.last_review ? control.ai_memory.last_review.day : undefined}>
             <Notes control={control} />
@@ -165,7 +182,7 @@ export default function DeskView({ state, refresh }: { state: LiveState | null; 
             <Record control={control} />
           </Block>
           <Block title="Before real money">
-            <Readiness control={control} />
+            <Readiness control={control} setup={setup} go={go} />
           </Block>
         </aside>
       </div>
@@ -175,8 +192,8 @@ export default function DeskView({ state, refresh }: { state: LiveState | null; 
 
 function Block({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="block">
-      <header><h2>{title}</h2>{aside && <div className="block-aside">{aside}</div>}</header>
+    <section className="blk">
+      <header><h2>{title}</h2>{aside && <div className="blk-aside">{aside}</div>}</header>
       {children}
     </section>
   );
@@ -186,7 +203,7 @@ function Positions({ rows }: { rows: DeskPosition[] }) {
   return (
     <div className="table-wrap">
       <table className="dense">
-        <thead><tr><th>Stock</th><th>Side</th><th className="num">Qty</th><th className="num">Entry</th><th className="num">Now</th><th className="gap">Stop → target</th><th className="num">P&L</th></tr></thead>
+        <thead><tr><th>Stock</th><th>Side</th><th className="num">Qty</th><th className="num">Entry</th><th className="num">Now</th><th className="gap">Stop to target</th><th className="num">P&L</th></tr></thead>
         <tbody>
           {rows.map((p) => {
             const lo = Math.min(p.stop, p.target), hi = Math.max(p.stop, p.target);
@@ -196,14 +213,14 @@ function Positions({ rows }: { rows: DeskPosition[] }) {
             return (
               <tr key={p.symbol}>
                 <td><strong>{p.symbol}</strong><span className="sub">{SETUP[p.generator ?? ""] ?? p.generator}</span></td>
-                <td><span className={`side ${p.side === "BUY" ? "buy" : "sell"}`}>{p.side === "BUY" ? "Long" : "Short"}</span></td>
+                <td><span className={`dir ${p.side === "BUY" ? "buy" : "sell"}`}>{p.side === "BUY" ? "Long" : "Short"}</span></td>
                 <td className="num">{p.qty}</td><td className="num">{num(p.entry)}</td><td className="num">{num(p.ltp)}</td>
                 <td className="gap">
-                  <div className="range" title={`Stop ${p.stop} · entry ${p.entry} · target ${p.target}`}>
+                  <div className="range" title={`Stop ${p.stop}, entry ${p.entry}, target ${p.target}`}>
                     <span className="range-entry" style={{ left: `${flip ? 100 - entryAt : entryAt}%` }} />
-                    <span className={`range-now ${tone(p.unrealized)}`} style={{ left: `${flip ? 100 - at : at}%` }} />
+                    <span className="range-now" style={{ left: `${flip ? 100 - at : at}%` }} />
                   </div>
-                  <span className="sub">{num(p.stop)} → {num(p.target)}</span>
+                  <span className="sub">{num(p.stop)} to {num(p.target)}</span>
                 </td>
                 <td className={`num ${tone(p.unrealized)}`}>{signedInr(p.unrealized)}</td>
               </tr>
@@ -215,65 +232,78 @@ function Positions({ rows }: { rows: DeskPosition[] }) {
   );
 }
 
-function outcomeOf(d: DeskDecision): { text: string; cls: string } {
+/** A setup's journey as gates on the line: where it was stopped or thinned, and what came out the end. */
+function journey(d: DeskDecision, llmOn: boolean): { gates: Gate[]; end: LineEnd } {
+  const byLLM = !NOT_LLM.has(d.by);
+  const reviewed = byLLM || d.confidence !== undefined || d.size !== undefined;
+  const pct = d.prob === null ? null : Math.round(d.prob * 100);
+  const skippedBy = d.verdict === "skip" ? (d.by === "model" ? "model" : byLLM ? "llm" : "limits") : null;
+
+  const model: Gate = pct === null
+    ? { key: "model", label: "Model", state: "absent", value: "no model yet" }
+    : { key: "model", label: "Model", state: skippedBy === "model" ? "cut" : "pass", value: skippedBy === "model" ? `${pct}%, too low` : `scored ${pct}%` };
+  const llm: Gate = !reviewed
+    ? { key: "llm", label: "LLM", state: "absent", value: llmOn ? "not asked" : "none connected" }
+    : d.error ? { key: "llm", label: "LLM", state: "cut", value: "call failed" }
+    : skippedBy === "llm" ? { key: "llm", label: "LLM", state: "cut", value: "said skip" }
+    : d.size !== undefined && d.size < 1 ? { key: "llm", label: "LLM", state: "thin", size: d.size, value: `cut to ${Math.round(d.size * 100)}%` }
+    : { key: "llm", label: "LLM", state: "pass", value: "said take" };
+  const limits: Gate = skippedBy === "limits"
+    ? { key: "limits", label: "Limits", state: "cut", value: d.by === "desk" ? "desk not taking" : "over a limit" }
+    : d.verdict === "take" ? { key: "limits", label: "Limits", state: "pass", value: d.qty ? `${d.qty} shares` : "within limits" }
+    : { key: "limits", label: "Limits", state: d.verdict === "" ? "wait" : "pass" };
+
+  let end: LineEnd;
   if (d.verdict === "take") {
-    if (d.status === "closed") return { text: `${signedInr(d.pnl ?? 0)} · ${(d.exit ?? "").replaceAll("_", " ")}`, cls: tone(d.pnl) };
-    if (d.status === "open") return { text: "open", cls: "" };
-    return { text: d.status ?? "–", cls: "" };
+    if (d.status === "closed") end = { label: (d.exit ?? "closed").replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase()), value: signedInr(d.pnl ?? 0), tone: tone(d.pnl) as LineEnd["tone"] };
+    else if (d.status === "open") end = { label: "Open", value: d.fill ? `in at ${num(d.fill)}` : "position on" };
+    else if (d.status === "pending") end = { label: "Order", value: "fills next bar" };
+    else end = { label: "Order", value: d.status ?? "placed" };
+  } else if (d.r !== undefined) {
+    end = { label: "Not traded", value: d.r > 0 ? `${sign(d.r, 1)}R missed` : `${sign(d.r, 1)}R avoided`, tone: d.r > 0 ? "ghost" : "gain" };
+  } else {
+    end = { label: "Not traded", value: "still following" };
   }
-  if (d.r !== undefined) return { text: `would have made ${sign(d.r)}R`, cls: d.r > 0 ? "missed" : "dodged" };
-  return { text: "watching", cls: "soft" };
+  return { gates: [model, llm, limits], end };
 }
 
-function Tape({ rows }: { rows: DeskDecision[] }) {
+function Tape({ rows, llmOn }: { rows: DeskDecision[]; llmOn: boolean }) {
   const [open, setOpen] = useState<string | null>(null);
   const ordered = useMemo(() => [...rows].reverse(), [rows]);
   return (
-    <div className="table-wrap">
-      <table className="dense tape">
-        <thead><tr><th>Time</th><th>Stock</th><th>Setup</th><th className="num">Model</th><th className="gap">Decision</th><th>By</th><th>Result</th><th /></tr></thead>
-        <tbody>
-          {ordered.map((d) => {
-            const out = outcomeOf(d);
-            const isOpen = open === d.id;
-            return (
-              <Fragment key={d.id}>
-                <tr className={`${d.verdict} ${isOpen ? "open" : ""}`} onClick={() => setOpen(isOpen ? null : d.id)}>
-                  <td className="tnum">{d.t}</td>
-                  <td><strong>{d.symbol}</strong> <span className={`side ${d.side === "BUY" ? "buy" : "sell"}`}>{d.side === "BUY" ? "Long" : "Short"}</span></td>
-                  <td>{SETUP[d.kind] ?? d.kind}</td>
-                  <td className="num">{d.prob === null ? "–" : (
-                    <span className="score" title={d.expected_r !== null ? `Expected ${sign(d.expected_r)}R after costs` : undefined}>
-                      <i style={{ width: `${Math.round(d.prob * 100)}%` }} />{Math.round(d.prob * 100)}%
-                    </span>)}
-                  </td>
-                  <td className="gap"><span className={`call ${d.verdict}`}>{d.verdict === "take" ? "Take" : "Skip"}</span>{d.size !== undefined && d.verdict === "take" && d.size < 1 && <span className="sub"> at {Math.round(d.size * 100)}% size</span>}</td>
-                  <td className="by">{d.by || "–"}</td>
-                  <td className={out.cls}>{out.text}</td>
-                  <td className="chev"><ChevronDown size={14} aria-label={isOpen ? "Hide reasoning" : "Show reasoning"} /></td>
-                </tr>
-                {isOpen && (
-                  <tr className="why">
-                    <td colSpan={8}>
-                      <div className="why-grid">
-                        <div><b>Setup</b><p>{d.why}</p><p className="soft">Entry {num(d.entry)} · stop {num(d.stop)} · target {num(d.target)}{d.qty ? ` · ${d.qty} shares` : ""}</p></div>
-                        <div><b>{d.verdict === "take" ? "Why it was taken" : "Why it was skipped"}</b>
-                          <p>{d.note || "No note."}</p>
-                          {d.flags?.length > 0 && <p className="flags">{d.flags.map((f) => <span key={f}>{f.replaceAll("_", " ")}</span>)}</p>}
-                          {d.error && <p className="loss">LLM error: {d.error}</p>}
-                        </div>
-                        <div><b>Model</b><p>{d.prob === null ? "No model yet: passed through unscored." : `${Math.round(d.prob * 100)}% chance of a profit after costs${d.expected_r !== null ? `; expects ${sign(d.expected_r)}R` : ""}.`}</p>
-                          {d.r !== undefined && <p className="soft">Followed mechanically it made {sign(d.r)}R ({d.outcome === "eod" ? "held to the close" : `hit its ${d.outcome}`}), before costs.</p>}
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="tape">
+      {ordered.map((d) => {
+        const { gates, end } = journey(d, llmOn);
+        const isOpen = open === d.id;
+        const byLLM = !NOT_LLM.has(d.by);
+        const setupName = SETUP[d.kind] ?? d.kind;
+        return (
+          <div key={d.id} className={`setup ${d.verdict} ${isOpen ? "open" : ""}`}>
+            <button type="button" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : d.id)}>
+              <span className="who">
+                <b>{d.symbol}</b>
+                <span>{d.t} <span className={`dir ${d.side === "BUY" ? "buy" : "sell"}`}>{d.side === "BUY" ? "long" : "short"}</span></span>
+              </span>
+              <Line source={{ label: "Rule", value: SHORT[d.kind] ?? setupName }} gates={gates} end={end}
+                label={`${d.symbol} ${setupName}: ${d.verdict === "take" ? "taken" : "skipped"}`} />
+              <ChevronDown size={16} className="chev" aria-hidden />
+            </button>
+            {isOpen && (
+              <div className="why">
+                <div><h4>The rule: {setupName.toLowerCase()}</h4><p>{d.why}</p><p className="soft">Entry {num(d.entry)}, stop {num(d.stop)}, target {num(d.target)}{d.qty ? `, ${d.qty} shares` : ""}.</p></div>
+                <div><h4>{d.verdict === "take" ? "Why it was taken" : "Why it was skipped"}</h4>
+                  {byLLM ? <p className="voice">{d.note || "No note."}<span className="voice-by">{d.by}{d.confidence !== undefined ? `, ${Math.round(d.confidence * 100)}% sure` : ""}</span></p> : <p>{d.note || "No note."}</p>}
+                  {d.flags?.length > 0 && <p className="flags">{d.flags.map((f) => <span key={f}>{f.replaceAll("_", " ")}</span>)}</p>}
+                  {d.error && <p className="loss">LLM error: {d.error}</p>}
+                </div>
+                <div><h4>The model</h4><p>{d.prob === null ? "No model yet, so it passed through unscored." : `${Math.round(d.prob * 100)}% chance of a profit after costs${d.expected_r !== null ? `; it expects ${sign(d.expected_r)}R` : ""}.`}</p>
+                  {d.r !== undefined && <p className="soft">Followed mechanically it made {sign(d.r)}R ({d.outcome === "eod" ? "held to the close" : `hit its ${d.outcome}`}), before costs.</p>}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -284,15 +314,15 @@ function Watch({ desk }: { desk: AIDesk }) {
   return (
     <div className="table-wrap watch">
       <table className="dense">
-        <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Day</th><th className="num">vs VWAP</th><th className="num">Vol ×</th></tr></thead>
+        <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Day</th><th className="num">vs VWAP</th><th className="num">Volume</th></tr></thead>
         <tbody>
           {rows.map((w) => (
             <tr key={w.symbol}>
-              <td>{held.has(w.symbol) && <i className="held" title="Position open" />}{w.symbol}</td>
+              <td>{held.has(w.symbol) && <i className="held" title="Position open" />}<span className="ticker">{w.symbol}</span></td>
               <td className="num">{num(w.ltp)}</td>
               <td className={`num ${tone(w.chg_pct)}`}>{sign(w.chg_pct)}%</td>
               <td className={`num ${tone(w.vs_vwap_pct)}`}>{sign(w.vs_vwap_pct)}%</td>
-              <td className={`num ${w.rvol !== null && w.rvol >= 1.5 ? "hot" : "soft"}`}>{w.rvol === null ? "–" : w.rvol.toFixed(1)}</td>
+              <td className={`num ${w.rvol !== null && w.rvol >= 1.5 ? "hot" : "soft"}`}>{w.rvol === null ? "–" : `${w.rvol.toFixed(1)}×`}</td>
             </tr>
           ))}
         </tbody>
@@ -317,7 +347,7 @@ function ModelCard({ report, summary, strict, jobError }: { report: ModelReport 
     return (
       <>
         {jobError && <div className="notice stop" style={{ marginBottom: 12 }}><span className="grow">Training failed: {jobError}</span></div>}
-        <p className="quiet">{summary ? "Loading the report." : "No model yet. The desk trains one from the last 60 days of 5-minute bars the first time it runs (about a minute), or press Retrain."}</p>
+        <p className="quiet-line">{summary ? "Loading the report." : "No model yet. The desk trains one from the last 60 days of 5-minute bars the first time it runs (about a minute), or press Retrain."}</p>
       </>
     );
   }
@@ -363,7 +393,7 @@ function ModelCard({ report, summary, strict, jobError }: { report: ModelReport 
             ))}
           </ul>
           <h3>Best 30%, running total (R)</h3>
-          {o.curve.length > 1 ? <Spark rows={o.curve} /> : <p className="quiet">Not enough days yet.</p>}
+          {o.curve.length > 1 ? <Spark rows={o.curve} /> : <p className="quiet-line">Not enough days yet.</p>}
           {report.note && <p className="small soft">{report.note}</p>}
         </div>
       </div>
@@ -396,21 +426,23 @@ function Spark({ rows }: { rows: [string, number, number][] }) {
 function Notes({ control }: { control?: LiveState["control"] }) {
   const mem = control?.ai_memory;
   const review = mem?.last_review;
-  if (!review && !mem?.lessons?.length) return <p className="quiet">After each close the desk writes up its day here. With an LLM connected it also keeps a few lessons and reads them before every decision.</p>;
+  if (!review && !mem?.lessons?.length) return <p className="quiet-line">After each close the desk writes up its day here. With an LLM connected it also keeps a few lessons and reads them before every decision.</p>;
+  const byModel = !!review?.summary;
   return (
     <div className="notes">
-      {review && (
-        <p>{review.summary || `${review.numbers.trades} trade${review.numbers.trades === 1 ? "" : "s"}, net ${signedInr(review.numbers.net_pnl)}.`}
-          {review.numbers.skipped_avg_r !== null && <span className="soft"> Skipped setups averaged {sign(review.numbers.skipped_avg_r)}R; taken ones {sign(review.numbers.taken_avg_r)}R.</span>}</p>
-      )}
-      {mem?.lessons?.length ? <ul>{[...mem.lessons].reverse().map((l, i) => <li key={i}><span className="soft">{l.day.slice(5)}</span>{l.text}</li>)}</ul> : null}
+      {review && (byModel
+        ? <p className="voice">{review.summary}<span className="voice-by">{review.by}, on {review.day}</span></p>
+        : <p>{review.numbers.trades} trade{review.numbers.trades === 1 ? "" : "s"}, net {signedInr(review.numbers.net_pnl)}.</p>)}
+      {review && review.numbers.skipped_avg_r !== null && <p className="soft small" style={{ marginTop: 8 }}>Skipped setups averaged {sign(review.numbers.skipped_avg_r)}R; taken ones {sign(review.numbers.taken_avg_r)}R.</p>}
+      {mem?.lessons?.length ? <ul>{[...mem.lessons].reverse().map((l, i) => <li key={i}><span className="soft">{l.day.slice(5)}</span><span className="voice">{l.text}</span></li>)}</ul> : null}
+      {mem?.lessons?.length ? <p className="soft small" style={{ marginTop: 10 }}>Lessons are written by the LLM from one day&apos;s evidence and shown to it before each decision. They are not yet scored.</p> : null}
     </div>
   );
 }
 
 function Record({ control }: { control?: LiveState["control"] }) {
   const days = control?.ai_history ?? [];
-  if (!days.length) return <p className="quiet">Each trading day is added here after the close.</p>;
+  if (!days.length) return <p className="quiet-line">Each trading day is added here after the close.</p>;
   const net = days.reduce((a, d) => a + d.net, 0), trades = days.reduce((a, d) => a + d.trades, 0), wins = days.reduce((a, d) => a + d.wins, 0);
   return (
     <>
@@ -425,16 +457,19 @@ function Record({ control }: { control?: LiveState["control"] }) {
   );
 }
 
-function Readiness({ control }: { control?: LiveState["control"] }) {
+function Readiness({ control, setup, go }: { control?: LiveState["control"]; setup: SetupState | null; go?: Go }) {
   const env = control?.effective_settings?.env_only;
   const days = control?.ai_history ?? [];
   const trades = days.reduce((a, d) => a + d.trades, 0), net = days.reduce((a, d) => a + d.net, 0);
   const verdict = control?.ai_model?.verdict;
+  const groww = setup ? setup.groww.configured : !!env?.groww_configured;
+  const growwChecked = !!setup?.groww.lastCheck?.ok;
+  const ip = setup?.groww.lastCheck?.ip;
   const items: { ok: boolean; text: string; detail: string }[] = [
-    { ok: verdict === "edge_supported", text: "The model shows an edge out of sample", detail: verdict ? VERDICT[verdict]?.tag ?? verdict : "not trained" },
+    { ok: verdict === "edge_supported", text: "The model shows an edge on days it had not seen", detail: verdict ? VERDICT[verdict]?.tag ?? verdict : "not trained" },
     { ok: trades >= 100 && net > 0, text: "100 paper trades with a profit after costs", detail: `${trades} so far, ${signedInr(net)}` },
-    { ok: !!env?.groww_configured, text: "Groww Trade API key on the trading machine", detail: env?.groww_configured ? "set" : "not set here" },
-    { ok: !!env?.static_ip_configured, text: "A static IP registered with Groww", detail: env?.static_ip_configured ? "set" : "Vercel has none" },
+    { ok: groww && growwChecked, text: "A Groww key that passes its check", detail: growwChecked ? "checked" : groww ? "saved, not checked" : "not connected" },
+    { ok: !!ip?.ok || !!env?.static_ip_configured, text: "A static IP registered with Groww", detail: ip?.ok ? "matches" : env?.static_ip_configured ? "set" : "none here" },
   ];
   return (
     <>
@@ -442,8 +477,8 @@ function Readiness({ control }: { control?: LiveState["control"] }) {
         {items.map((i) => <li key={i.text} className={i.ok ? "ok" : ""}><span>{i.text}</span><em>{i.detail}</em></li>)}
       </ul>
       <p className="small soft">
-        This desk trades on paper. Brokers accept API orders only from a static IP registered to your account, which Vercel cannot provide, so real orders need a small
-        always-on machine running <code>thunderbot live</code> with <code>TB_STRATEGY=ai</code>. It uses this same model, LLM and risk limits. See docs/ai-desk.md.
+        Real orders are only accepted from a static IP registered to your account, so they need a small machine of your own running <code>thunderbot live</code>.
+        Nothing on this dashboard can switch them on. <button type="button" onClick={() => go?.("settings")} style={{ border: 0, background: "none", padding: 0, cursor: "pointer", textDecoration: "underline", color: "inherit", font: "inherit" }}>Open Setup</button>
       </p>
     </>
   );

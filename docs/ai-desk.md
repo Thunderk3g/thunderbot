@@ -78,19 +78,19 @@ every 5 minutes, 09:30-14:30 IST
 
 Nothing new to deploy: the desk runs inside `/api/worker` on each scheduled call.
 
-1. Apply `supabase/migrations/20261112000000_ai_desk.sql` (a `models` table and the `train` job kind).
-2. In the Vercel project, add the LLM (optional; without it the model decides alone):
+1. Apply `supabase/migrations/20261112000000_ai_desk.sql` (a `models` table and the `train` job kind) and
+   `20261113000000_secrets.sql` (the encrypted key store).
+2. Connect an LLM (optional; without it the model decides alone). Open **Setup → LLM** on the dashboard,
+   pick a provider, paste a key, press **Check key**, choose a model from the list the provider returns,
+   and press **Save and test**. The key is stored encrypted in your own database and the worker uses it
+   from its next pass.
 
-   | Variable | Example |
-   |---|---|
-   | `LLM_API_KEY` | your key |
-   | `LLM_BASE_URL` | `https://api.x.ai/v1`, `https://api.groq.com/openai/v1`, `https://api.openai.com/v1` |
-   | `LLM_MODEL` | the model's id at that provider |
-
-   Optional: `TB_AI_SYMBOLS` (comma-separated NSE symbols; the default is 24 liquid Nifty 50 names),
-   `TB_LLM_ENABLED=false` to switch the LLM off while leaving the key in place.
-3. Redeploy, open the dashboard's **AI desk** and press **Start paper trading**. The first call trains a
-   model (under a minute). Risk limits are the ones on the Settings page.
+   The same thing can still be done with environment variables where the worker runs: `LLM_API_KEY`,
+   `LLM_BASE_URL` (for example `https://api.x.ai/v1` or `https://api.groq.com/openai/v1`) and `LLM_MODEL`.
+   A key saved in Setup takes precedence. `TB_LLM_ENABLED=false` switches the LLM off while leaving the
+   key in place. `TB_AI_SYMBOLS` changes the stocks watched (the default is 24 liquid Nifty 50 names).
+3. Open the dashboard's **Desk** and press **Start paper trading**. The first call trains a model (under a
+   minute). Risk limits are under **Setup → Desk limits**.
 
 Supabase's scheduler calls the worker every five minutes in market hours, which is what the desk needs.
 Vercel's own 15-minute schedule is too coarse by itself; keep the Supabase scheduler connected.
@@ -126,7 +126,7 @@ above are yours to turn.
 
 | Symptom | Likely cause |
 |---|---|
-| "No LLM connected" | The three `LLM_*` variables are not all set for Production, or the deployment predates them. |
+| "No LLM connected" | No key is saved in Setup and the three `LLM_*` variables are not all set where the worker runs. |
 | Every decision says "LLM error" | Wrong key, base URL or model id; the message is in the tape row. |
 | No setups all day | Normal on quiet days. The generators fire a few dozen times a day across 24 stocks; the floor passes about a third. |
 | "No prices from Yahoo" | Yahoo refused the function's address for a while. The desk tries again on the next bar. |

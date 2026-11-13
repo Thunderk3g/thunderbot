@@ -75,7 +75,7 @@ export function StatusDot({ tone }: { tone: "on" | "off" | "idle" }) {
 }
 
 export function Button({ children, variant = "", size = "", onClick, disabled, type = "button", title, block }: {
-  children: ReactNode; variant?: "" | "primary" | "stop" | "quiet"; size?: "" | "sm" | "lg"; onClick?: () => void;
+  children: ReactNode; variant?: "" | "primary" | "go" | "stop" | "quiet"; size?: "" | "sm" | "lg"; onClick?: () => void;
   disabled?: boolean; type?: "button" | "submit"; title?: string; block?: boolean;
 }) {
   return (

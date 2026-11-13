@@ -67,11 +67,11 @@ switch. Editing the harness can change what is proposed. It cannot change what i
 | Honest backtesting | Daily plans after Groww charges and asset-class tax, with a benchmark and a no-timing twin; walk-forward ML report with a worded verdict | Parameter sweeps use one train/test split with no correction for trying many settings; stock plans use today's index members (survivorship bias) |
 | Paper trading | Daily investing and the intraday AI desk both run from a scheduled function, state in Postgres | Works; fills are simulated from 5-minute Yahoo bars, so they are optimistic about liquidity |
 | Portfolio management | Fixed-mix and trend plans over three or four ETFs | No view of what the owner already holds, no goals, no risk profile, no portfolio construction beyond equal or fixed weights, no tax-aware rebalancing, no drift bands |
-| LLM roles | Signal reviewer, intraday trader, rebalance checker; all veto or shrink only; prompts and replies journalled | Two separate client stacks (Anthropic SDK and an OpenAI-compatible client); the rebalance checker works with one provider only; no role yet does the thing LLMs are best evidenced for (reading text) |
+| LLM roles | Signal reviewer, intraday trader, rebalance checker; all veto or shrink only; every role works with Claude or any OpenAI-compatible provider; prompts and replies journalled | No role yet does the thing LLMs are best evidenced for (reading text) |
 | Measuring the LLM | Every setup is followed to its outcome whether taken or not; vetoed and approved signals compared by average R | No pass or fail gate decided in advance; no minimum sample; no control for the model changing under a fixed name |
 | Editable harness | Strategy parameters and risk limits editable in the dashboard | Prompts, roles, plans and gates are source code; no versioning of a harness as a unit; no way to compare two harnesses on the same forward data |
-| Bring your own keys | LLM by three environment variables; Groww by environment variables on the worker | No setup screen, no key check, no per-user storage; the whole system assumes one user |
-| Explaining itself | Rationale stored with each decision; a setup tape on the AI desk | No plain-language account of how a trade happens, what each number means, or why the portfolio is what it is |
+| Bring your own keys | A Setup page: paste an LLM key and a Groww key, each is checked live and stored encrypted in the install's own database; nothing stored there can enable real orders | No one-command install; the scheduler is still set up by hand; long-running workers read saved keys only at start |
+| Explaining itself | Every decision is drawn as a line through its gates, showing who stopped or shrank it; words an LLM wrote are set in their own typeface; a Guide page explains each step and term | No account of why the portfolio is what it is; no page per past decision |
 | Live trading | Engine with broker-side stops, static-IP check, order throttle, daily login confirmation | Not yet run with real money; the long-running engine keeps positions in memory only; delivery orders do not handle partial fills |
 
 ## Bring your own keys
@@ -99,10 +99,11 @@ whether distributing software makes its author a provider. Sources are in
 
 ## Stages
 
-1. **Make it legible.** A "how it works" page; every number on the dashboard explained where it is
-   shown; one page per decision showing rule, model, LLM, limits and outcome.
-2. **Make it one person's in ten minutes.** Setup screen for the LLM key (any provider) and the Groww
-   key, with a live check of each; one provider interface for every LLM role.
+1. **Make it legible.** Done in the main: a Guide page, and every decision drawn as a line through its
+   gates. Still to do: one page per past decision.
+2. **Make it one person's in ten minutes.** Done in the main: a Setup page for the LLM key (any provider)
+   and the Groww key, with a live check of each, and one provider interface for every LLM role. Still to
+   do: a one-command install.
 3. **Make the harness a thing.** Policy, roles and gates as versioned files; prompts out of the source;
    a harness has an id that is stamped on every decision it makes.
 4. **Make the gates real.** Pre-registered pass or fail rules for plans and for each LLM role, enforced
@@ -162,6 +163,9 @@ what you inferred by reading.
 
 **Already known (verify, do not rediscover)**
 
+- The Setup page stores keys encrypted with a key derived from `TB_SECRET_KEY`, or from the database's
+  service key when that is unset. With the fallback, anyone holding the service key can decrypt them; a
+  database dump alone cannot. Set `TB_SECRET_KEY` for real separation.
 - Parameter sweeps (`jobs.py`, `sweep`) split history once, 70/30, and flag a row "robust" with no
   correction for the number of settings tried.
 - `thunderbot invest-backtest --years 18` shows a flat benchmark, because NIFTYBEES has no Yahoo history
