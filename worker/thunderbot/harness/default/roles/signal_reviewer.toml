@@ -1,0 +1,10 @@
+label = "Signal reviewer"
+purpose = "Reviews each signal from a single intraday strategy on the long-running engine, and may veto it or ask for a smaller size."
+may = "shrink"
+reads = [
+  "the signal: entry, stop, target and the strategy's reason",
+  "the last hour of bars",
+  "the account's day: result so far, trades opened, open positions",
+]
+on_failure = "The trade is skipped."
+prompt = "signal_reviewer.md"

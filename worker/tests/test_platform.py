@@ -162,7 +162,29 @@ class TestJobs:
         assert len(res["rows"]) == 6
         nets = [row["in_sample"]["net_pnl"] for row in res["rows"]]
         assert nets == sorted(nets, reverse=True)
-        assert all("out_of_sample" in row and "robust" in row for row in res["rows"])
+        assert all("out_of_sample" in row and "robust" not in row for row in res["rows"])
+        # Each row carries its annualised Sharpe and its Sharpe deflated for every setting tried so far.
+        assert all(isinstance(row["sharpe"], float) and 0.0 <= row["dsr"] <= 1.0 for row in res["rows"])
+        assert res["trials"] == 6 and res["trials_this_run"] == 6 and "robust_count" not in res
+        assert res["blocks"] == 8 and res["splits"] == 70 and 0.0 <= res["pbo"] <= 1.0
+        # Random-walk data has no edge, so no setting may clear the bar, and the verdict says how many were tried.
+        assert res["cleared"] == 0 and res["verdict"].startswith("No setting clears the bar once 6 trials are counted")
+
+        # Trying more settings on the same strategy, stocks and data keeps counting: 6 + 3 + 1.
+        more = r.execute("sweep", {"strategy": "orb", "data": "demo", "start": "2026-01-05", "end": "2026-04-30",
+                                   "grid": {"reward_risk": [1.5, 2, 3]}})
+        assert more["trials"] == 9 and more["trials_this_run"] == 3 and "9 trials" in more["verdict"]
+        single = r.execute("backtest", {"strategy": "orb", "data": "demo", "start": "2026-01-05", "end": "2026-04-30"})
+        assert single["trials"] == 10 and "trial 10" in single["data_note"] and 0.0 <= single["dsr"] <= 1.0
+        other = r.execute("backtest", {"strategy": "vwap_reversion", "data": "demo", "start": "2026-01-05", "end": "2026-04-30"})
+        assert other["trials"] == 1  # a different strategy has its own count
+
+    def test_gates_job_scores_the_roles(self, tmp_path):
+        r = self.runner(tmp_path)
+        out = r.execute("gates", {})
+        assert [x["role"] for x in out["roles"]] == ["trader", "signal_reviewer"] and out["roles"][0]["verdict"] == "too_few"
+        control = r.store.get_control()
+        assert control["gates"]["roles"] == out["roles"] and control["harness"]["id"]
 
     def test_bad_jobs_fail_cleanly(self, tmp_path):
         r = self.runner(tmp_path)

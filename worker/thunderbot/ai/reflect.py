@@ -1,7 +1,12 @@
 """End-of-day review: what the desk did, what the skipped setups would have done, and a few lessons.
 
-The lessons are kept in the control row ``ai_memory`` and shown to the LLM trader on later days. With
-no LLM configured the review is the numbers alone and no lessons are written.
+The review and its lessons are kept in the control row ``ai_memory`` and shown on the dashboard. Whether
+the trader also sees the lessons before its next decisions is the harness's memory mode: "journal_only"
+(the default) keeps them out of the prompt, because one day of trades is thin evidence and a prompt that
+changes overnight is a different, unscored harness; "inject" puts them in. With no LLM configured the
+review is the numbers alone and no lessons are written.
+
+The prompt is a file in the harness (``roles/day_reviewer.md``).
 """
 
 from __future__ import annotations
@@ -10,25 +15,26 @@ import json
 import logging
 from typing import Any
 
+from .. import harness
 from ..config import Settings
+from ..llm.adapter import ModelAdapter, configured
 
 log = logging.getLogger(__name__)
 
 MAX_LESSONS = 8
 
-REVIEW_PROMPT = """\
-You are reviewing one day of a small intraday paper-trading desk on India's NSE. Each setup below was either
-taken or skipped; "r" is what it made in units of risk if followed mechanically from signal to stop, target
-or the close (before costs), and "pnl" is the rupee result after costs for trades that were taken.
+def lessons_for_prompt(control: dict[str, Any]) -> list[dict[str, Any]]:
+    """The lessons the trader is shown: none unless the harness's memory mode is "inject"."""
+    if harness.current().memory_mode != "inject":
+        return []
+    return [{"day": x.get("day"), "text": x.get("text")} for x in (control.get("ai_memory") or {}).get("lessons") or []]
 
-Write for the trader who will sit at this desk tomorrow. Reply with one JSON object and nothing else:
-{"summary": "two or three plain sentences on how the day went and why",
- "lessons": ["up to four short, specific, testable rules of thumb drawn from today's evidence"]}
 
-Rules for lessons: base each one on something visible in the data (a kind of setup, a time of day, the
-market's direction, a pattern in what was skipped). Do not write generic trading advice. One day is thin
-evidence, so word lessons as things to watch, and write none if the day shows nothing clear.
-"""
+def __getattr__(name: str) -> Any:
+    # The prompt lives in the harness now; the old name still reads it.
+    if name == "REVIEW_PROMPT":
+        return harness.current().prompt("day_reviewer")
+    raise AttributeError(name)
 
 
 def day_numbers(st: dict[str, Any]) -> dict[str, Any]:
@@ -45,25 +51,25 @@ def day_numbers(st: dict[str, Any]) -> dict[str, Any]:
             "halted": st["risk"]["halted"]}
 
 
-def review_day(store: Any, s: Settings, st: dict[str, Any], control: dict[str, Any]) -> dict[str, Any]:
+def review_day(store: Any, s: Settings, st: dict[str, Any], control: dict[str, Any], adapter: Any | None = None) -> dict[str, Any]:
     numbers = day_numbers(st)
     memory = dict(control.get("ai_memory") or {})
     review: dict[str, Any] = {"day": st["day"], "numbers": numbers, "summary": "", "by": "none"}
-    if s.llm_enabled and s.chat_llm and st["decisions"]:
-        from ..llm.trader import ChatClient, extract_json
-
+    if configured(s) and st["decisions"]:
         rows = [{k: d.get(k) for k in ("t", "symbol", "side", "kind", "prob", "verdict", "by", "r", "outcome", "pnl", "exit")}
                 for d in st["decisions"]]
         user = json.dumps({"numbers": numbers, "market_at_close": (control.get("ai_desk") or {}).get("market"),
                            "setups": rows, "earlier_lessons": memory.get("lessons") or []}, indent=1, default=str)
-        client = ChatClient(s.llm_api_key or "", s.llm_base_url or "", s.llm_chat_model or "", timeout=45.0)
-        text, _ = client.complete(REVIEW_PROMPT, user, max_tokens=600)
-        out = extract_json(text)
-        review["summary"] = str(out.get("summary", "")).strip()[:900]
-        review["by"] = client.model
-        fresh = [str(x).strip()[:240] for x in (out.get("lessons") or []) if str(x).strip()][:4]
-        dated = [{"day": st["day"], "text": x} for x in fresh]
+        adapter = adapter or ModelAdapter(s)
+        reply = adapter.ask("day_reviewer", user)
+        if reply.data is None:
+            raise RuntimeError(reply.error or "the review call failed")
+        review["summary"] = reply.data["summary"]
+        review["by"] = reply.model
+        review["harness_id"], review["cost_inr"] = reply.harness_id, reply.cost_inr
+        dated = [{"day": st["day"], "text": x, "harness_id": reply.harness_id} for x in reply.data["lessons"]]
         memory["lessons"] = ((memory.get("lessons") or []) + dated)[-MAX_LESSONS:]
+    memory["mode"] = harness.current().memory_mode
     memory["last_review"] = review
     store.set_control("ai_memory", memory)
     took = f"{numbers['trades']} trade{'s' if numbers['trades'] != 1 else ''}"

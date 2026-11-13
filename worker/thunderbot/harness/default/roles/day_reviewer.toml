@@ -1,0 +1,10 @@
+label = "End-of-day reviewer"
+purpose = "Writes a short review of the desk's day and up to four lessons. It affects no trade; whether the trader sees its lessons is set by memory mode in policy.toml."
+may = "notes"
+reads = [
+  "the day's numbers",
+  "every setup, taken or skipped, with what it went on to do",
+  "the market at the close",
+]
+on_failure = "The day is recorded with its numbers and no review."
+prompt = "day_reviewer.md"

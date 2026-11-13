@@ -6,6 +6,9 @@ server), using ``requests`` only. Configure LLM_API_KEY, LLM_BASE_URL and LLM_MO
 The contract is the same as the Claude reviewer's: the reply can approve or reject a signal and set a
 size multiplier between 0 and 1. It never sets a price, never creates a trade, never enlarges one, and
 ``RiskManager`` runs after it. Its prompt and reply are journalled with every decision.
+
+The prompt is a file in the harness (``roles/trader.md``); this module keeps the message the trader is
+shown and the HTTP client. Every call goes through ``llm.adapter``.
 """
 
 from __future__ import annotations
@@ -17,43 +20,10 @@ import time
 from typing import Any
 
 from ..config import Settings
-from .types import LLMDecision, ReviewContext
+from .filter import RoleFilter
+from .types import ReviewContext
 
 log = logging.getLogger(__name__)
-
-TRADER_PROMPT = """\
-You are the trader on a small intraday desk in India's NSE cash market. Positions are intraday only (MIS)
-and are closed by the desk at 15:05 IST whatever happens.
-
-A quant engine proposes one setup at a time with a fixed entry, stop and target. A machine-learning model
-has scored it: "ml.prob" is its estimate that the trade ends in profit after costs, "ml.expected_r" its
-expected result in units of risk, and "ml.track_record" says how setups it scored like this one actually
-did on days it had not seen. You decide whether the desk takes the trade and at what share of normal size.
-
-Reply with one JSON object and nothing else:
-{"decision": "take" or "skip", "size_multiplier": 0.0 to 1.0, "confidence": 0.0 to 1.0,
- "rationale": "two to four plain sentences naming the figures that decided it",
- "risk_flags": ["short_snake_case_tags"]}
-
-What you control: take or skip, and size from 0 to 1 (1 = the desk's normal size; you cannot go above it).
-What you do not control: entry, stop, target, order type and timing. Hard limits on daily loss, number of
-positions and position size run after you and override you.
-
-How to judge:
-- Use only the data in the message. Do not use anything you may know about what this stock or the market
-  did after the time shown, and do not assume news that is not shown.
-- Charges and slippage cost roughly 0.2% of the position on every round trip. A setup needs a real reason
-  to beat that. The track record tells you how often these have; weigh it honestly, including when it is poor.
-- For breakouts and momentum, prefer trades in the direction of the market so far today ("market"), with
-  volume clearly above normal ("rvol"), not stretched far from VWAP, and with time left before 15:05.
-- For reversion setups, prefer a quiet or choppy market and avoid fading a strong one-way day.
-- Look at "account_today": after losses today, or with positions already open in the same direction, be
-  more selective.
-- "lessons" are notes this desk wrote after earlier sessions. Use them when they apply.
-- Skip when the picture is mixed. Most days deserve few trades. When a setup is good but has one clear
-  concern, take it at reduced size and name the concern in risk_flags.
-"""
-
 
 def provider_of(base_url: str | None) -> str:
     host = re.sub(r"^https?://", "", (base_url or "").strip()).split("/")[0].lower()
@@ -168,43 +138,17 @@ class ChatClient:
         raise RuntimeError(last)
 
 
-class ChatSignalFilter:
-    enabled = True
+class ChatSignalFilter(RoleFilter):
+    """The desk's trader through any OpenAI-compatible chat endpoint."""
 
-    def __init__(self, settings: Settings, client: ChatClient | None = None) -> None:
-        self.s = settings
-        self.client = client or ChatClient(settings.llm_api_key or "", settings.llm_base_url or "",
-                                           settings.llm_chat_model or "", timeout=min(settings.llm_timeout_seconds, 45.0))
+    def __init__(self, settings: Settings, client: ChatClient | None = None, role: str = "trader") -> None:
+        super().__init__(settings, role, client, family="chat")
 
-    @property
-    def label(self) -> str:
-        return self.client.model
 
-    def review(self, ctx: ReviewContext) -> LLMDecision:
-        prompt = build_trader_message(ctx)
-        model = self.client.model
-        started = time.monotonic()
-        try:
-            text, raw = self.client.complete(TRADER_PROMPT, prompt)
-            out = extract_json(text)
-            decision = str(out.get("decision", "")).strip().lower()
-            if decision not in ("take", "skip", "approve", "reject"):
-                raise ValueError(f"decision must be take or skip, got {decision!r}")
-            approve = decision in ("take", "approve")
-            size = min(max(float(out.get("size_multiplier", 1.0 if approve else 0.0)), 0.0), 1.0)
-            confidence = min(max(float(out.get("confidence", 0.5)), 0.0), 1.0)
-            flags = out.get("risk_flags") or []
-            flags = [str(x).strip() for x in (flags if isinstance(flags, list) else [flags]) if str(x).strip()][:10]
-            rationale = str(out.get("rationale", "")).strip() or "(no rationale given)"
-        except Exception as e:
-            log.warning("LLM trader failed: %s", e)
-            d = LLMDecision.failed(f"{type(e).__name__}: {e}"[:300], self.s.llm_fail_mode, model, prompt)
-            d.latency_ms = int((time.monotonic() - started) * 1000)
-            return d
-        usage = raw.get("usage") or {}
-        return LLMDecision(
-            approve=approve, size_multiplier=size if approve else 0.0, confidence=confidence, rationale=rationale[:1200],
-            risk_flags=flags, model=str(raw.get("model") or model), latency_ms=int((time.monotonic() - started) * 1000),
-            input_tokens=int(usage.get("prompt_tokens") or 0), output_tokens=int(usage.get("completion_tokens") or 0),
-            request_id=raw.get("id"), prompt=prompt,
-        )
+def __getattr__(name: str) -> Any:
+    # The prompt lives in the harness now (roles/trader.md); the old name still reads it.
+    if name == "TRADER_PROMPT":
+        from .. import harness
+
+        return harness.current().prompt("trader")
+    raise AttributeError(name)

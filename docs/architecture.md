@@ -101,9 +101,14 @@ Dashboard "Check now" / Lab "Test" (Basic Auth) ---------->                   `-
 | `strategy/vwap_reversion.py` | Fades a move stretched N ATRs from VWAP at an RSI extreme with a reversal bar; targets VWAP; skips trades whose target doesn't cover the stop. |
 | `strategy/ema_pullback.py` | Joins an established fast/slow EMA trend on a pullback to the slow EMA that closes back beyond the fast EMA, on the right side of VWAP. |
 | `strategy/orb.py` | Opening Range Breakout: 15-min range, close beyond range and VWAP, relative-volume surge vs. same time slot on prior days, stop at the far side of the range (tightened by ATR), 2R target, one signal per symbol per day. |
-| `llm/filter.py` | Claude review via `client.beta.messages.parse` with a Pydantic schema; `fallbacks="default"` reroutes safety declines to Anthropic's recommended fallback model. |
+| `harness/` | The editable layer, as files: `policy.toml`, `gates.toml`, `plans/`, and a `.toml` and a `.md` prompt per role. Loaded and checked against the hard ceilings and each role's permitted authority; an invalid harness is not used and the built-in one runs. A 12-character digest of every file, the `harness_id`, is stamped on every decision. See [`harness.md`](harness.md). |
+| `harness/gates.py` | Role stages (`shadow`: asked and journalled, not obeyed; `active`: applied). Scores each setup a role was asked about as `(w − 1)·R − c`, wraps the running mean in a confidence sequence, and promotes or demotes on its bounds. Publishes the `harness` and `gates` control rows. |
+| `stats/confseq.py` | Time-uniform empirical-Bernstein confidence sequence for a bounded mean (Waudby-Smith and Ramdas, 2024), in plain Python. |
+| `stats/overfit.py` | Deflated Sharpe ratio (Bailey and López de Prado) and probability of backtest overfitting by combinatorially symmetric cross-validation. |
+| `llm/adapter.py` | The one way to ask a model, for every role: builds the request for either client, checks the reply against the role's contract (which decisions, what shape), and returns it with the model id the provider answered with, tokens, latency, cost and `harness_id`. On Anthropic it calls `client.beta.messages.parse` with a Pydantic schema; `fallbacks="default"` reroutes safety declines to Anthropic's recommended fallback model. |
+| `llm/filter.py` | `RoleFilter`: a trade role (the desk's `trader`, the engine's `signal_reviewer`) on either client. A failed call follows `llm_fail_mode` (skip by default). |
 | `llm/provider.py` | The two provider families (Anthropic's API through its SDK; the OpenAI-compatible protocol through `ChatClient` for xAI Grok, Groq, OpenAI, Gemini, OpenRouter or a local server) and how a saved key maps onto settings. No routing library and no hardcoded model names. |
-| `llm/rebalance.py` | The rebalance reviewer for either family (`ClaudeRebalanceReviewer`, `ChatRebalanceReviewer`): approve or postpone, and a reviewer that cannot answer approves. |
+| `llm/rebalance.py` | The rebalance reviewer for either client, through the adapter: approve or postpone, and a reviewer that cannot answer approves. |
 | `secrets.py`, `credentials.py` | Decrypts keys saved from the dashboard and applies them over the environment. Unreadable secrets are logged without their contents and ignored. |
 | `broker/check.py` | The read-only Groww check behind `thunderbot login-check` and the `groww_check` job: key type, login, profile, live data, public IP against the registered one. |
 | `risk.py` | Kill switch, halt, entry window, universe, one position per symbol, max positions and trades, product rules (no CNC shorts, MTF gated), signal geometry, max stop distance, fixed-fractional sizing, notional and cash caps, daily-loss halt. |
@@ -114,8 +119,8 @@ Dashboard "Check now" / Lab "Test" (Basic Auth) ---------->                   `-
 | `engine.py` | The polling loop: controls, heartbeat, prices, position management, halts, flatten, and bar-close signal scan. Orders are marketable LIMITs inside a price-protection band, never naked MARKET (MPP-friendly). |
 | `backtest.py` | Next-bar-open fills, stop-before-target when a bar touches both, gap-through-stop exits at the open, 15:05 flatten, costs on both legs. |
 | `compliance.py` | Static-IP check against `TB_EXPECTED_STATIC_IP` (primary[,secondary]) and unique 13-char order reference ids. |
-| `store.py` | SQLite journal plus Supabase PostgREST mirror; control reads prefer Supabase (where the dashboard writes). `select`/`update` back the job queue. |
-| `jobs.py` | Research job runner: backtests and walk-forward sweeps (max 60 combinations, in-sample/out-of-sample split, "robust" flag). |
+| `store.py` | SQLite journal plus Supabase PostgREST mirror; control reads prefer Supabase (where the dashboard writes). `select`/`update` back the job queue. An insert that names a column the database does not have yet is sent again without it and logged, so a worker newer than its database loses no row. |
+| `jobs.py` | Research job runner: backtests and sweeps (max 60 combinations, in-sample/out-of-sample columns). Counts every setting ever tried per strategy, universe and data source, deflates each row's Sharpe ratio for that count, and reports the probability of backtest overfitting. Also the `gates` job, which scores the LLM roles on demand. |
 | `replay.py` | Replays candles through the real engine and paper broker with a simulated clock. |
 | `server.py` | `thunderbot serve`: PostgREST-compatible subset (select/order/limit/eq..in filters, upsert, patch) over the SQLite journal, bound to localhost, key-protected; validates settings overrides on write. |
 | `llm/filter.py` `HeuristicFilter` | Free rule-based reviewer with the same veto/shrink contract, labelled `model="heuristic"`. It is the baseline Claude has to beat. |
@@ -150,8 +155,11 @@ Published LLM-trading results are mostly short backtests, and LLMs have seen his
 training, which inflates backtests through look-ahead bias. So:
 
 - `thunderbot backtest` runs without the LLM unless you pass `--llm`, which logs a warning.
-- Evaluate the LLM layer in **paper trading**: compare approved and vetoed signals (both are journaled
-  with outcomes you can join on `signal_id`) over several weeks before trusting it with size.
+- The LLM layer is evaluated only on **forward paper and live decisions**. On the desk a trade role
+  starts in shadow: it is asked and its answer is journalled, and the desk carries on as if it had said
+  "take at full size". Each setup it was asked about is scored as `(w − 1)·R − c` against leaving the
+  setup alone, and the role's answers are applied only once a confidence sequence on that score has its
+  lower bound above zero over at least 100 setups. See [`harness.md`](harness.md).
 - Model: `claude-opus-5-5` at `effort=medium`, one call per signal (a handful per day), with server-side
   refusal fallback enabled. Change it with `TB_LLM_MODEL` / `TB_LLM_EFFORT`.
 

@@ -386,3 +386,218 @@ class TestRunner:
         runner.tick()
         runner.tick()
         assert len(store.select("jobs", {"kind": "train"})) == 1
+
+
+class RoleTake(Take):
+    """A stand-in for a harness role: unlike ``Take`` it says which role it is, so its stage applies."""
+
+    role = "trader"
+
+    def review(self, ctx):
+        d = super().review(ctx)
+        d.role, d.cost_inr = self.role, 2.0
+        return d
+
+
+class TestStagesAndMemory:
+    """The harness in the desk: a role in shadow is asked and journalled, not obeyed; lessons stay out of
+    the prompt unless the harness says otherwise; every row says which harness made it."""
+
+    def _one_bar(self, desk, llm, after=None):
+        s, store, clock, make = desk
+        t = ts(9, 45)
+        after = after or [bar(t, 101.5, 101.6, 100.0, 100.2)]  # stops out on the next bar
+        runner, _ = make({"AAA": _day_bars(after), INDEX: flat_session(DAY, 25000.0)}, llm)
+        out = runner.tick()
+        return out, store, clock, runner
+
+    def test_a_role_in_shadow_is_journalled_but_not_obeyed(self, desk):
+        from thunderbot import harness
+
+        out, store, clock, runner = self._one_bar(desk, RoleTake(approve=False))
+        assert out["entered"] == 1  # the trader said skip; in shadow the desk carries on at full size
+        d = store.get_control()[DESK_KEY]["decisions"][0]
+        assert d["verdict"] == "take" and d["stage"] == "shadow" and d["said"] == "skip" and d["asked_size"] == 0.0 and d["size"] == 1.0
+        row = store.select("llm_decisions")[0]
+        assert row["approve"] is False and row["role"] == "trader" and row["stage"] == "shadow"  # what it said is kept
+        assert row["harness_id"] == harness.current_id() and row["cost_inr"] == 2.0
+        assert store.select("signals")[0]["harness_id"] == harness.current_id()
+        pos = store.get_control()[STATE_KEY]["positions"]["AAA"]
+        full = min(int(100_000 * 0.01 / (pos["entry"] - pos["stop"])), int(100_000 / pos["entry"]))  # risk, then the notional cap
+        assert pos["qty"] == full == 985
+
+        clock["now"] = ts(9, 50) + timedelta(seconds=10)
+        runner.tick()
+        o = store.select("signal_outcomes")[0]
+        assert o["llm_decision"] == "reject" and o["llm_role"] == "trader" and o["llm_stage"] == "shadow" and o["llm_w"] == 0.0
+        assert o["harness_id"] == harness.current_id() and o["llm_cost_inr"] == 2.0 and o["llm_model"] == "fake-llm"
+        # 985 shares with a stop 0.81 away risk about Rs 800; charges take a little more than the stop did.
+        assert o["r_multiple"] == -1.0 and -1.3 < o["net_r"] < -1.0 and o["risk_inr"] == pytest.approx(985 * 0.81, abs=1)
+        assert not any(k.startswith("_") for k in o)  # working fields are not journalled
+        assert store.get_control()[DESK_KEY]["stage"] == "shadow"
+
+    def test_an_active_role_is_obeyed(self, desk):
+        from thunderbot import harness
+        from thunderbot.harness import gates
+
+        s, store, clock, make = desk
+        store.set_control(gates.STAGES_KEY, {"trader": {"stage": "active", "harness_id": harness.current_id()}})
+        out, store, clock, runner = self._one_bar(desk, RoleTake(approve=False))
+        assert out["entered"] == 0
+        d = store.get_control()[DESK_KEY]["decisions"][0]
+        assert d["verdict"] == "skip" and d["stage"] == "active" and d["said"] == "skip"
+        assert store.select("llm_decisions")[0]["stage"] == "active"
+
+    def test_authority_earned_under_another_harness_does_not_carry_over(self, desk):
+        from thunderbot.harness import gates
+
+        s, store, clock, make = desk
+        store.set_control(gates.STAGES_KEY, {"trader": {"stage": "active", "harness_id": "an-older-one"}})
+        out, *_ = self._one_bar(desk, RoleTake(approve=False))
+        assert out["entered"] == 1  # an edited harness starts again in shadow
+
+    def test_shrinking_in_shadow_leaves_the_size_alone_and_records_what_was_asked(self, desk):
+        out, store, clock, runner = self._one_bar(desk, RoleTake(size=0.5))
+        d = store.get_control()[DESK_KEY]["decisions"][0]
+        assert d["said"] == "take" and d["asked_size"] == 0.5 and d["size"] == 1.0
+        assert store.get_control()[STATE_KEY]["positions"]["AAA"]["qty"] == 985  # full size, not half
+
+    def test_lessons_are_journalled_and_only_injected_when_the_harness_says_so(self, desk, tmp_path, monkeypatch):
+        import shutil
+
+        from thunderbot import harness
+
+        s, store, clock, make = desk
+        store.set_control("ai_memory", {"lessons": [{"day": "2026-10-14", "text": "Avoid late breakouts."}]})
+        llm = RoleTake()
+        self._one_bar(desk, llm)
+        assert llm.seen[0].extra["lessons"] == []  # journal_only: written down, never fed back
+        assert store.get_control()[DESK_KEY]["memory_mode"] == "journal_only"
+        first = harness.current_id()
+
+        copy = tmp_path / "harness"
+        shutil.copytree(harness.DEFAULT_DIR, copy)
+        (copy / "policy.toml").write_text((copy / "policy.toml").read_text().replace('mode = "journal_only"', 'mode = "inject"'))
+        monkeypatch.setenv("TB_HARNESS_DIR", str(copy))
+        try:
+            assert harness.reload().id != first  # turning memory on is a different harness
+            store.set_control(STATE_KEY, None)
+            llm = RoleTake()
+            self._one_bar(desk, llm)
+            assert llm.seen[0].extra["lessons"] == [{"day": "2026-10-14", "text": "Avoid late breakouts."}]
+            assert store.select("llm_decisions")[0]["harness_id"] == harness.current_id()
+        finally:
+            monkeypatch.delenv("TB_HARNESS_DIR")
+            harness.reload()
+
+    def test_the_review_is_written_whatever_the_memory_mode(self, desk):
+        from thunderbot.ai.reflect import review_day
+        from thunderbot.llm.adapter import Reply
+
+        class Adapter:
+            def ask(self, role, user):
+                assert role == "day_reviewer" and "setups" in user
+                return Reply(role, {"summary": "Quiet day.", "lessons": ["Watch late entries."]}, "m-1", user, "h-1", cost_inr=1.5)
+
+        s, store, clock, make = desk
+        s = Settings(llm_api_key="k", llm_base_url="https://api.x.ai/v1", llm_chat_model="grok", llm_enabled=True)
+        st = {"day": "2026-10-15", "decisions": [{"t": "09:45", "symbol": "AAA", "verdict": "take", "r": 1.0}],
+              "risk": {"realized_pnl": 10.0, "halted": False}, "wins": 1, "losses": 0, "costs": 2.0}
+        review = review_day(store, s, st, {}, adapter=Adapter())
+        mem = store.get_control()["ai_memory"]
+        assert review["summary"] == "Quiet day." and review["by"] == "m-1" and review["harness_id"] == "h-1"
+        assert mem["lessons"] == [{"day": "2026-10-15", "text": "Watch late entries.", "harness_id": "h-1"}]
+        assert mem["mode"] == "journal_only"
+
+
+class TestAdapter:
+    """One adapter, two clients, four roles."""
+
+    def _chat(self, content, settings=None):
+        calls = []
+
+        def post(url, body):
+            calls.append(body)
+            return 200, {"id": "r1", "model": "served-model", "choices": [{"message": {"content": content}}],
+                         "usage": {"prompt_tokens": 1000, "completion_tokens": 200}}
+
+        s = settings or Settings(llm_api_key="k", llm_base_url="https://api.x.ai/v1", llm_chat_model="asked-model", llm_enabled=True)
+        return s, ChatClient("k", "https://api.x.ai/v1", "asked-model", post=post), calls
+
+    def _ctx(self):
+        sig = _signal()
+        sig.features.update(generator="orb", ml_prob=0.41)
+        return ReviewContext(sig, breakout_session())
+
+    def test_the_signal_reviewer_works_on_a_chat_endpoint(self):
+        from thunderbot import harness
+        from thunderbot.llm.filter import RoleFilter
+
+        s, client, calls = self._chat('{"decision":"reject","confidence":0.9,"rationale":"Thin volume.","risk_flags":["low_volume"]}')
+        d = RoleFilter(s, "signal_reviewer", client, family="chat").review(self._ctx())
+        assert not d.approve and d.size_multiplier == 0.0 and d.risk_flags == ["low_volume"] and d.role == "signal_reviewer"
+        assert d.model == "served-model" and d.harness_id == harness.current_id()  # the id the provider answered with
+        system = calls[0]["messages"][0]["content"]
+        assert system.startswith(harness.current().prompt("signal_reviewer")) and '"approve" or "reject"' in system
+        assert calls[0]["messages"][1]["content"].startswith("Review this signal.")
+
+    def test_the_trader_works_through_anthropic(self):
+        from types import SimpleNamespace
+
+        from thunderbot import harness
+        from thunderbot.llm.filter import build_filter
+
+        seen = {}
+
+        class Messages:
+            def parse(self, **kw):
+                seen.update(kw)
+                out = SimpleNamespace(decision="take", size_multiplier=0.4, confidence=0.7, rationale=" Fine. ", risk_flags=["late"])
+                return SimpleNamespace(parsed_output=out, stop_reason="end_turn", model="claude-served", _request_id="rq",
+                                       usage=SimpleNamespace(input_tokens=500, output_tokens=60))
+
+        client = SimpleNamespace(beta=SimpleNamespace(messages=Messages()))
+        s = Settings(llm_enabled=True, llm_model="claude-asked", anthropic_api_key="k")
+        f = build_filter(s, role="trader")
+        f.adapter.client = client
+        d = f.review(self._ctx())
+        assert d.approve and d.size_multiplier == 0.4 and d.rationale == "Fine." and d.model == "claude-served" and d.role == "trader"
+        assert seen["system"] == harness.current().prompt("trader") and seen["model"] == "claude-asked"
+        assert seen["messages"][0]["content"].startswith("Decide on this setup.")
+        assert set(seen["output_format"].model_fields) == {"decision", "size_multiplier", "confidence", "rationale", "risk_flags"}
+
+    def test_a_reply_can_never_enlarge_and_cost_uses_the_owners_prices(self, tmp_path, monkeypatch):
+        import shutil
+
+        from thunderbot import harness
+        from thunderbot.llm.adapter import ModelAdapter
+
+        copy = tmp_path / "harness"
+        shutil.copytree(harness.DEFAULT_DIR, copy)
+        text = (copy / "policy.toml").read_text()
+        (copy / "policy.toml").write_text(text.replace("usd_per_mtok_in = 0.0", "usd_per_mtok_in = 2.0")
+                                          .replace("usd_per_mtok_out = 0.0", "usd_per_mtok_out = 10.0").replace("usd_inr = 0.0", "usd_inr = 90.0"))
+        role = copy / "roles" / "trader.toml"
+        role.write_text(role.read_text().replace('may = "shrink"', 'may = "veto"'))
+        monkeypatch.setenv("TB_HARNESS_DIR", str(copy))
+        try:
+            harness.reload()
+            s, client, _ = self._chat('{"decision":"take","size_multiplier":7,"confidence":3,"rationale":"x"}')
+            reply = ModelAdapter(s, client, family="chat").ask("trader", "Decide on this setup.")
+            assert reply.data["size_multiplier"] == 1.0 and reply.data["confidence"] == 1.0
+            assert reply.cost_inr == pytest.approx((1000 * 2.0 + 200 * 10.0) / 1e6 * 90.0)  # Rs 0.36
+            s, client, _ = self._chat('{"decision":"take","size_multiplier":0.3,"confidence":0.8,"rationale":"x"}')
+            assert ModelAdapter(s, client, family="chat").ask("trader", "x").data["size_multiplier"] == 1.0  # veto-only: no shrinking
+        finally:
+            monkeypatch.delenv("TB_HARNESS_DIR")
+            harness.reload()
+
+    def test_a_decision_outside_the_contract_is_a_failed_call(self):
+        from thunderbot.llm.adapter import ModelAdapter
+
+        s, client, _ = self._chat('{"decision":"double","size_multiplier":2,"confidence":1,"rationale":"x"}')
+        reply = ModelAdapter(s, client, family="chat").ask("trader", "x")
+        assert reply.data is None and "decision must be take or skip" in reply.error
+        s, client, _ = self._chat('{"decision":"cancel","confidence":1,"rationale":"x"}')
+        reply = ModelAdapter(s, client, family="chat").ask("rebalance_reviewer", "x")
+        assert reply.data is None and "decision must be approve or postpone" in reply.error

@@ -1,0 +1,15 @@
+label = "Intraday trader"
+purpose = "Takes or skips each setup the model let through on the desk, and may ask for a smaller size."
+# The most this role may do: "veto" (take or skip only) or "shrink" (also reduce size). It can never
+# enlarge a trade, set a price or create one, whatever is written here.
+may = "shrink"
+reads = [
+  "the setup: entry, stop, target and why the rule fired",
+  "the model's score and how setups scored like it did on unseen days",
+  "the market so far today",
+  "the last hour of bars",
+  "the account's day: result so far, trades opened, open positions",
+  "lessons from earlier sessions, only when memory mode is \"inject\"",
+]
+on_failure = "The trade is skipped."
+prompt = "trader.md"

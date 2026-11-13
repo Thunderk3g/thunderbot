@@ -33,6 +33,9 @@ class LLMDecision:
     error: str | None = None
     request_id: str | None = None
     prompt: str = ""
+    role: str = ""  # which harness role answered ("" for the rule-based baseline and for no review)
+    harness_id: str = ""  # the harness the role ran under
+    cost_inr: float = 0.0  # what the call cost, from the prices in the harness's policy
 
     @classmethod
     def passthrough(cls) -> "LLMDecision":

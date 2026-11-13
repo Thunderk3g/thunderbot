@@ -25,15 +25,18 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+from .. import harness
 from ..clock import now_ist, to_ist
 from ..config import Settings
 from ..costs import CostModel
+from ..harness import gates
 from ..indicators import session_vwap
 from ..llm.types import LLMDecision, ReviewContext
 from ..models import Candle, ManagedPosition, Product, Side, Signal
 from ..risk import DayState, RiskManager
 from ..store import new_id
 from . import INDEX, features
+from .dataset import size_for
 from .market import fetch_many, split_today
 
 log = logging.getLogger(__name__)
@@ -72,8 +75,17 @@ class IntradayRunner:
 
         # Keys saved in the dashboard first, then its overrides; read on every call so a new key is used
         # from the next bar.
-        s, _ = apply_credentials(self.base, self.store).with_overrides(control.get("settings_overrides") or {})
-        return dataclasses.replace(s, symbols=list(s.ai_symbols), strategy="ai", strategy_params={})
+        # The harness's policy is applied beneath the dashboard's own overrides: the file sets the default,
+        # a change made on the Setup page is deliberate and wins. Both are checked against the same ceilings.
+        h = harness.current()
+        s, _ = apply_credentials(self.base, self.store).with_overrides(
+            {**h.risk_overrides(), **(control.get("settings_overrides") or {})})
+        return dataclasses.replace(s, symbols=h.desk_symbols() or list(s.ai_symbols), strategy="ai", strategy_params={})
+
+    def _params(self, control: dict[str, Any]) -> dict[str, Any]:
+        """The desk's own settings: the harness's plan, with the dashboard's choices on top."""
+        plan = (harness.current().plans.get("desk") or {}).get("params") or {}
+        return {**plan, **(control.get(PARAMS_KEY) or {})}
 
     def _new_state(self, day: str) -> dict[str, Any]:
         return {"day": day, "last_bar": None, "positions": {}, "pending": {}, "shadows": {}, "decisions": [],
@@ -94,13 +106,17 @@ class IntradayRunner:
             return self.filter_factory(s)
         from ..llm.filter import build_filter
 
-        return build_filter(s)
+        return build_filter(s, role="trader")  # the desk always asks the trader role, whichever client is in use
 
     # One call
 
     def tick(self) -> dict[str, Any]:
         now = to_ist(self.now())
         control = self.store.get_control()
+        try:
+            gates.publish(self.store, control)
+        except Exception as e:  # the dashboard's copy of the harness is a nicety; it must never stop a bar
+            log.warning("could not publish the harness: %s", e)
         s = self._settings(control)
         clock = s.clock()
         st = self._state(control, now)
@@ -290,8 +306,20 @@ class IntradayRunner:
         risk = abs(sh["entry"] - sh["stop"]) or 1e-9
         sign = 1 if sh["side"] == "BUY" else -1
         r = round((exit_price - sh["entry"]) * sign / risk, 3)
-        self.store.insert("signal_outcomes", {**sh, "exit_price": round(exit_price, 2), "outcome": outcome,
-                                              "closed_at": ts.isoformat(), "r_multiple": r, "mode": self.mode})
+        # The same setup after charges and slippage, at the size the risk limits would give it: what the
+        # gates score a role against. None when it could not have been filled at any size.
+        qty, slip = int(sh.get("_qty") or 0), float(sh.get("_slip") or 0.0)
+        net_r = risk_inr = None
+        if qty >= 1:
+            side = Side(sh["side"])
+            charges = self.costs.round_trip(side, qty, sh["entry"], exit_price, Product.MIS)
+            slippage = slip * (sh["entry"] + exit_price) * qty
+            risk_inr = round(risk * qty, 2)
+            net_r = round(((exit_price - sh["entry"]) * sign * qty - charges - slippage) / (risk * qty), 3)
+        row = {k: v for k, v in sh.items() if not k.startswith("_")}
+        self.store.insert("signal_outcomes", {**row, "exit_price": round(exit_price, 2), "outcome": outcome,
+                                              "closed_at": ts.isoformat(), "r_multiple": r, "net_r": net_r,
+                                              "risk_inr": risk_inr, "mode": self.mode})
         self._mark(st, sid, r=r, outcome=outcome)
 
     def _order(self, sym: str, side: Side, qty: int, price: float, signal_id: str, purpose: str) -> None:
@@ -314,7 +342,7 @@ class IntradayRunner:
         from ..strategy import build_strategy
         from .train import load_active_model
 
-        strat = build_strategy("ai", control.get(PARAMS_KEY) or {}, s.allow_short)
+        strat = build_strategy("ai", self._params(control), s.allow_short)
         try:
             row = load_active_model(self.store, (control.get("ai_model") or {}).get("id"))
         except Exception as e:
@@ -331,6 +359,8 @@ class IntradayRunner:
         step = timedelta(minutes=s.interval_minutes)
         if not clock.in_entry_window(bar_start + step):
             return 0
+        from .reflect import lessons_for_prompt
+
         strat = self._strategy(s, control)
         strat.observe_index(index_session)
         fresh = []
@@ -350,8 +380,12 @@ class IntradayRunner:
             "market": market,
             "ml": {"track_record": {k: summary.get(k) for k in ("verdict_text", "best", "all") if summary.get(k)}}
             if summary else {"track_record": "no model trained yet; every setup is passed through unscored"},
-            "lessons": (control.get(MEMORY_KEY) or {}).get("lessons") or [],
+            # Empty unless the harness's memory mode is "inject": lessons are journalled, not fed back.
+            "lessons": lessons_for_prompt(control),
         }
+        h = harness.current()
+        role = getattr(signal_filter, "role", None)  # None for the rule-based baseline: not a harness role
+        stage = gates.stage_of(control, role, h)
         slip = s.slippage_bps / 10_000.0
         reviews = entered = 0
         for c in fresh:
@@ -360,7 +394,7 @@ class IntradayRunner:
             self.store.insert("signals", {
                 "id": sid, "symbol": sig.symbol, "side": sig.side, "product": sig.product, "strategy": sig.strategy,
                 "signal_ts": sig.ts, "entry": sig.entry, "stop": sig.stop, "target": sig.target, "reason": sig.reason,
-                "features": sig.features, "mode": self.mode,
+                "features": sig.features, "mode": self.mode, "harness_id": h.id,
             })
             dec = {"id": sid, "t": _hm(sig.ts + step), "symbol": sig.symbol, "side": sig.side.value, "kind": c.generator,
                    "entry": sig.entry, "stop": sig.stop, "target": sig.target, "prob": None if c.prob is None else round(c.prob, 3),
@@ -368,7 +402,8 @@ class IntradayRunner:
             st["decisions"] = (st["decisions"] + [dec])[-MAX_DECISIONS:]
             shadow = {"signal_id": sid, "symbol": sig.symbol, "strategy": sig.strategy, "side": sig.side.value, "entry": sig.entry,
                       "stop": sig.stop, "target": sig.target, "signal_ts": sig.ts.isoformat(), "llm_decision": "none",
-                      "llm_size_multiplier": None, "risk_approved": False}
+                      "llm_size_multiplier": None, "risk_approved": False, "harness_id": h.id,
+                      "_qty": size_for(sig, s), "_slip": slip}
             st["shadows"][sid] = shadow
 
             if not c.taken:
@@ -396,13 +431,22 @@ class IntradayRunner:
                     "confidence": decision.confidence, "rationale": decision.rationale, "risk_flags": decision.risk_flags,
                     "model": decision.model, "latency_ms": decision.latency_ms, "input_tokens": decision.input_tokens,
                     "output_tokens": decision.output_tokens, "error": decision.error, "request_id": decision.request_id,
-                    "prompt": decision.prompt,
+                    "prompt": decision.prompt, "role": role, "stage": stage, "harness_id": h.id,
+                    "cost_inr": decision.cost_inr,
                 })
-                shadow.update(llm_decision="approve" if decision.approve else "reject", llm_size_multiplier=decision.size_multiplier)
-                dec.update(by=decision.model, note=decision.rationale, flags=decision.risk_flags,
-                           confidence=round(decision.confidence, 2), size=round(decision.size_multiplier, 2))
+                w = gates.asked_weight(decision, s.llm_min_confidence)
+                shadow.update(llm_decision="approve" if decision.approve else "reject", llm_size_multiplier=decision.size_multiplier,
+                              llm_role=role, llm_stage=stage, llm_w=w, llm_cost_inr=decision.cost_inr, llm_model=decision.model)
+                # "said" and "asked_size" are the role's answer; "size" is what was applied. In shadow the
+                # answer is written down and the desk carries on as if it had said "take at full size".
+                dec.update(by=decision.model, note=decision.rationale, flags=decision.risk_flags, stage=stage,
+                           said="take" if w > 0 else "skip", asked_size=round(w, 2),
+                           confidence=round(decision.confidence, 2),
+                           size=round(decision.size_multiplier, 2) if stage == "active" else 1.0)
                 if decision.error:
                     dec["error"] = decision.error
+                if stage != "active":
+                    decision = None  # asked and journalled, not applied
 
             held = {p["symbol"]: ManagedPosition(p["symbol"], Side(p["side"]), Product.MIS, p["qty"], p["entry"], p["stop"],
                                                  p["target"], bar_start, "paper")
@@ -466,6 +510,11 @@ class IntradayRunner:
         except Exception as e:  # the review is a nicety; it must never block the day's close
             log.warning("day review failed: %s", e)
             self.store.event("error", f"AI day review failed: {type(e).__name__}: {e}")
+        try:
+            gates.evaluate(self.store)
+        except Exception as e:  # scoring is bookkeeping; a failure here must not undo the day's close
+            log.warning("gate evaluation failed: %s", e)
+            self.store.event("error", f"gate evaluation failed: {type(e).__name__}: {e}")
         self._save(st, s, control, now, "closed", enabled)
         self._ensure_model(control, st, after_close=True)
         return {"intraday": "day closed", "realized": st["risk"]["realized_pnl"], "trades": st["risk"]["trades_opened"]}
@@ -562,5 +611,7 @@ class IntradayRunner:
             "limits": {"capital": s.capital, "risk_per_trade_pct": s.risk_per_trade_pct, "max_daily_loss_pct": s.max_daily_loss_pct,
                        "max_open_positions": s.max_open_positions, "max_trades_per_day": s.max_trades_per_day,
                        "entry_window": f"{s.entry_start}-{s.entry_end}", "flatten_at": s.flatten_at},
-            "params": control.get(PARAMS_KEY) or {}, "universe": len(s.symbols), "feed_error": st.get("feed_error"),
+            "params": self._params(control), "universe": len(s.symbols), "feed_error": st.get("feed_error"),
+            "harness_id": harness.current_id(), "memory_mode": harness.current().memory_mode,
+            "stage": gates.stage_of(control, "trader"),
         })

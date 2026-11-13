@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "thunderbot"
 version = "0.1.0"
 description = "Deterministic intraday/delivery trading engine for Groww with an LLM signal filter that cannot override hard risk limits."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31",
 ]
@@ -28,7 +28,7 @@ thunderbot = "thunderbot.cli:main"
 include = ["thunderbot*"]
 
 [tool.setuptools.package-data]
-thunderbot = ["universes/*.txt"]
+thunderbot = ["universes/*.txt", "harness/default/*.toml", "harness/default/*/*.toml", "harness/default/*/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

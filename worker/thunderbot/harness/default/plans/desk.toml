@@ -1,0 +1,6 @@
+# The intraday paper desk. A value changed on the dashboard's Desk page is applied on top.
+strategy = "ai"
+
+[params]
+strict = 0          # 0: learning, trade the best-scored 30% of setups. 1: only what the model expects to profit.
+min_stop_pct = 0.8  # stops closer than this are widened, because charges cost about 0.2% a round trip

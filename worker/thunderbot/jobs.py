@@ -4,10 +4,17 @@ The dashboard inserts a row into ``jobs`` with ``status="queued"``; ``JobRunner`
 picks it up, runs it with the same strategy/risk/cost code as live trading, and
 writes the result back to the row. Jobs never place orders.
 
-Walk-forward sweeps rank every parameter combination on the first part of the
-history (in-sample) and report how the same combination did on the later,
-unseen part (out-of-sample). Only configurations that hold up out-of-sample
-deserve paper trading; the best in-sample row is usually overfit.
+Sweeps rank every parameter combination on the first part of the history (in-sample) and report how
+the same combination did on the later part (out-of-sample). Two corrections then say whether the best
+row is anything more than the luckiest of many (see ``stats.overfit``):
+
+- every setting ever tried on a strategy, universe and data source is counted, across sweeps, and each
+  row's Sharpe ratio is deflated by that count;
+- the probability of backtest overfitting is measured by re-splitting the days in every balanced way
+  and asking how often the in-sample winner lands in the bottom half out of sample.
+
+A row clears the bar only when its deflated Sharpe ratio is at least 0.95 and that probability is low.
+Clearing it earns paper trading and nothing more.
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from .config import Settings
 from .costs import CostModel
 from .data import CSVMarketData, GrowwMarketData, synthetic_history, write_csv
 from .models import Candle
+from .stats import overfit
 from .store import CompositeStore
 from .strategy import STRATEGIES, build_strategy, coerce_params
 
@@ -33,6 +41,9 @@ log = logging.getLogger(__name__)
 
 MAX_SWEEP_COMBOS = 60
 MAX_TRADES_IN_RESULT = 300
+TRIALS_KEY = "backtest_trials"
+DSR_NEEDED = 0.95  # a deflated Sharpe ratio below this is not evidence of anything
+PBO_MAX = 0.2  # the in-sample winner may land in the bottom half out of sample in at most this share of splits
 DATA_SOURCES = ("demo", "yahoo", "csv", "groww")
 
 
@@ -152,6 +163,36 @@ def _split_days(data: dict[str, list[Candle]], fraction: float) -> tuple[dict, d
     return ins, oos, cut
 
 
+def _daily_returns(*results: BacktestResult) -> dict[date, float]:
+    """Each day's profit as a share of capital, from one or more runs over separate dates."""
+    out: dict[date, float] = {}
+    for res in results:
+        for d, pnl in res.daily_pnl.items():
+            out[d] = out.get(d, 0.0) + pnl / res.capital
+    return out
+
+
+def _sweep_verdict(rows: list[dict[str, Any]], trials: int, overfit: dict[str, Any] | None) -> tuple[str, int]:
+    """Whether any setting is more than the luckiest of ``trials``, in plain words."""
+    scored = [r["dsr"] for r in rows if r["dsr"] is not None]
+    best = max(scored, default=None)
+    pbo_ok = overfit is None or overfit["pbo"] <= PBO_MAX
+    cleared = sum(1 for d in scored if d >= DSR_NEEDED) if pbo_ok else 0
+    counted = f"{trials} trial{'s' if trials != 1 else ''}"
+    if overfit is None:
+        split = "There are too few days or settings to test for overfitting by re-splitting."
+    else:
+        split = (f"Picking the in-sample winner landed in the bottom half out of sample in {overfit['pbo'] * 100:.0f}% of "
+                 f"{overfit['splits']} ways of splitting the days ({PBO_MAX * 100:.0f}% or less is needed).")
+    if best is None:
+        return f"Nothing to judge: no setting produced returns. {counted.capitalize()} counted so far.", 0
+    if cleared:
+        return (f"{cleared} of {len(rows)} settings clear the bar with {counted} counted: a deflated Sharpe ratio of at "
+                f"least {DSR_NEEDED:g}. {split} That earns paper trading, nothing more."), cleared
+    return (f"No setting clears the bar once {counted} are counted. The best deflated Sharpe ratio is {best:.2f}; "
+            f"{DSR_NEEDED:g} is needed. {split}"), 0
+
+
 class JobRunner:
     def __init__(self, store: CompositeStore, base_settings: Settings, groww_client_factory=None,
                  poll_seconds: float = 2.0) -> None:
@@ -184,6 +225,12 @@ class JobRunner:
         self.store.set_control("strategy_catalog", catalog())
         self.store.set_control("daily_catalog", DAILY_CATALOG)
         control = self.store.get_control()
+        try:
+            from .harness import gates
+
+            gates.publish(self.store, control)
+        except Exception:
+            log.exception("could not publish the harness")
         if "effective_settings" not in control:
             new, rejected = self._current().with_overrides(control.get("settings_overrides") or {})
             self.store.set_control("effective_settings", {**new.public_view(), "rejected": rejected})
@@ -267,6 +314,8 @@ class JobRunner:
             return self.train(params, progress)
         if kind == "groww_check":
             return self.groww_check(params, progress)
+        if kind == "gates":
+            return self.gates(params, progress)
         raise JobError(f"unknown job kind {kind!r}")
 
     def _current(self) -> Settings:
@@ -294,13 +343,44 @@ class JobRunner:
         self.store.set_control("groww_check", result)
         return result
 
+    def gates(self, params: dict[str, Any], progress) -> dict[str, Any]:
+        """Score every LLM role's forward decisions now and move stages where the evidence says so.
+
+        The desk does this after each close; this is the same thing on demand.
+        """
+        from .harness import gates
+
+        gates.publish(self.store)
+        result = gates.evaluate(self.store)
+        progress(1.0)
+        return result
+
+    def _count_trials(self, strategy: str, s: Settings, source: str, sharpes: list[float]) -> tuple[int, float]:
+        """Add these runs to the running count for this strategy, universe and data source.
+
+        Returns the total number of settings ever tried on it and the variance of their per-day Sharpe
+        ratios: ten sweeps of six rows are sixty trials, not six.
+        """
+        key = f"{strategy}|{','.join(sorted(s.symbols))}|{source}"
+        table = dict(self.store.get_control().get(TRIALS_KEY) or {})
+        held = table.get(key) or {"trials": 0, "sum": 0.0, "sum2": 0.0}
+        held = {"trials": int(held["trials"]) + len(sharpes), "sum": float(held["sum"]) + sum(sharpes),
+                "sum2": float(held["sum2"]) + sum(x * x for x in sharpes), "updated_at": now_ist().isoformat()}
+        table[key] = held
+        self.store.set_control(TRIALS_KEY, table)
+        k = held["trials"]
+        mean = held["sum"] / k if k else 0.0
+        return k, max(held["sum2"] / k - mean * mean, 0.0) if k else 0.0
+
     def train(self, params: dict[str, Any], progress) -> dict[str, Any]:
         """Retrain the AI desk's setup model on the last 60 days of 5-minute bars and make it the active one."""
         from .ai.train import DEFAULT_MIN_STOP_PCT, TrainError, run_training
 
         control = self.store.get_control()
         s, _ = self.base.with_overrides(control.get("settings_overrides") or {})
-        ai_params = control.get("ai_params") or {}
+        from . import harness
+
+        ai_params = {**((harness.current().plans.get("desk") or {}).get("params") or {}), **(control.get("ai_params") or {})}
         symbols = [str(x).upper() for x in (params.get("symbols") or s.ai_symbols)][:60]
         try:
             return run_training(s, self.store, symbols, progress,
@@ -365,11 +445,17 @@ class JobRunner:
         sp = coerce_params(strategy, params.get("strategy_params"))
         progress(0.2)
         res = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(data)
+        returns = [r for _, r in sorted(_daily_returns(res).items())]
+        trials, variance = self._count_trials(strategy, s, params.get("data", "demo"), [overfit.sharpe(returns)])
+        dsr = overfit.deflated_sharpe(returns, trials, variance)
+        note += (f" This is trial {trials} on this strategy, these stocks and this data; its Sharpe ratio deflated for "
+                 f"that many tries is {dsr:.2f} (0.95 is needed to mean anything)." if dsr is not None else "")
         if strategy == "ai":
             # A model tested on the days it was trained on looks better than it is, so it is left out here.
             note += (" The AI strategy is backtested without its model: every setup is taken. The model's own "
                      "report, judged only on days it had not seen, is on the AI desk.")
-        return {**_result_payload(res), "strategy": strategy, "strategy_params": sp, "data_note": note}
+        return {**_result_payload(res), "strategy": strategy, "strategy_params": sp, "data_note": note,
+                "trials": trials, "dsr": None if dsr is None else round(dsr, 3)}
 
     def sweep(self, params: dict[str, Any], progress) -> dict[str, Any]:
         strategy, s, data, note = self._common(params)
@@ -392,17 +478,32 @@ class JobRunner:
         ins, oos, cut = _split_days(data, fraction)
 
         rows = []
+        series: list[dict[date, float]] = []
         for i, combo in enumerate(combos):
             sp = {**base_params, **dict(zip([n for n, _ in axes], combo, strict=True))}
-            r_in = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(ins).metrics()
-            r_out = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(oos).metrics()
-            robust = (r_out["net_pnl"] > 0 and (r_out["profit_factor"] or 0) >= 1.1 and r_out["trades"] >= 20
-                      and r_in["net_pnl"] > 0)
-            rows.append({"params": sp, "in_sample": _summary(r_in), "out_of_sample": _summary(r_out), "robust": robust})
+            res_in = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(ins)
+            res_out = Backtester(s, build_strategy(strategy, sp, s.allow_short), CostModel()).run(oos)
+            series.append(_daily_returns(res_in, res_out))
+            rows.append({"params": sp, "in_sample": _summary(res_in.metrics()), "out_of_sample": _summary(res_out.metrics())})
             progress((i + 1) / len(combos))
+
+        # Every setting's returns on the same days, then the two corrections for having tried many.
+        days = sorted({d for x in series for d in x})
+        matrix = [[x.get(d, 0.0) for x in series] for d in days]
+        per_row = [[row[j] for row in matrix] for j in range(len(rows))]
+        trials, variance = self._count_trials(strategy, s, params.get("data", "demo"), [overfit.sharpe(r) for r in per_row])
+        for row, returns in zip(rows, per_row, strict=True):
+            dsr = overfit.deflated_sharpe(returns, trials, variance)
+            row["sharpe"] = round(overfit.sharpe(returns) * 252 ** 0.5, 2)
+            row["dsr"] = None if dsr is None else round(dsr, 3)
+        split = overfit.pbo(matrix, int(params.get("blocks", 8)))
+        verdict, cleared = _sweep_verdict(rows, trials, split)
         rows.sort(key=lambda r: r["in_sample"]["net_pnl"], reverse=True)
         return {
             "strategy": strategy, "axes": [{"name": n, "values": v} for n, v in axes], "rows": rows,
             "split_date": cut.isoformat() if cut else None, "in_sample_fraction": fraction, "data_note": note,
-            "robust_count": sum(r["robust"] for r in rows),
+            "trials": trials, "trials_this_run": len(rows), "days": len(days),
+            "pbo": None if split is None else round(float(split["pbo"]), 3),
+            "blocks": 0 if split is None else int(split["blocks"]), "splits": 0 if split is None else int(split["splits"]),
+            "dsr_needed": DSR_NEEDED, "pbo_max": PBO_MAX, "cleared": cleared, "verdict": verdict,
         }

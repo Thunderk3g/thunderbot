@@ -1,0 +1,37 @@
+# Policy: what the owner wants from this copy of Thunderbot.
+#
+# Every number here is a wish, not a permission. The engine checks each one against ceilings that
+# live in the code (2% risk per trade, 10% daily loss, 5x intraday leverage) and refuses to load a
+# harness that asks for more. Nothing in this file can switch on real orders.
+#
+# Leave a line commented out to keep whatever is set where the worker runs or on the Setup page.
+# A value set here is applied first; a value changed on the dashboard's Setup page is applied on top.
+
+[memory]
+# "journal_only": the end-of-day review and its lessons are written down and shown, and are never
+#                 put into the next day's prompt.
+# "inject":       the newest lessons are shown to the intraday trader before each decision. One day of
+#                 trades is thin evidence, so this is off unless you turn it on here, which also changes
+#                 this harness's id and restarts the trader's scoring.
+mode = "journal_only"
+
+[risk]
+# capital = 100000
+# risk_per_trade_pct = 0.5
+# max_daily_loss_pct = 2.0
+# max_open_positions = 3
+# max_trades_per_day = 6
+# max_leverage = 1.0
+
+[instruments]
+# Stocks the intraday desk may watch. Empty means the built-in list of 24 liquid Nifty 50 names
+# (or TB_AI_SYMBOLS where the worker runs).
+desk_symbols = []
+
+[llm_cost]
+# What your provider charges, so every decision can carry its cost and an LLM role has to earn it
+# back. Prices change often and differ by model, so none is assumed: with zeros the cost is recorded
+# as 0. Fill in your model's price per million tokens and a rupee rate.
+usd_per_mtok_in = 0.0
+usd_per_mtok_out = 0.0
+usd_inr = 0.0

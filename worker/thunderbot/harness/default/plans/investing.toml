@@ -1,0 +1,6 @@
+# The daily investing plan, used until a plan is chosen on the dashboard's Plans page.
+# Names: core_mix, etf_trend, etf_rank, index_trend, momentum. Parameters are the ones the Plans page
+# shows for that plan; anything left out keeps its default.
+plan = "core_mix"
+
+[params]

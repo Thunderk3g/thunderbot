@@ -3,47 +3,21 @@
 The LLM can only approve or veto a signal and suggest a size multiplier in
 [0, 1]. It never sees order controls and never sets prices. ``RiskManager``
 clamps its output and has the final say.
+
+The prompts are files in the harness (``roles/signal_reviewer.md``, ``roles/trader.md``); every call
+goes through ``llm.adapter``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any, Protocol
 
 from ..config import Settings
 from .types import LLMDecision, ReviewContext
 
 log = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """\
-You are the risk reviewer for a small, rules-based intraday trading system on India's NSE cash market.
-A deterministic strategy has already produced a trade signal with a fixed entry, stop and target.
-Your job is to decide whether to let it through, and if so how much of the normal size to use.
-
-What you control:
-- decision: "approve" or "reject".
-- size_multiplier: a number from 0.0 to 1.0. 1.0 means normal size. You can never increase size.
-- confidence: a number from 0.0 to 1.0 for how sure you are of your decision.
-- rationale: two to four plain sentences a human can audit later.
-- risk_flags: short snake_case tags for concerns, e.g. "late_session", "low_volume", "extended_from_vwap",
-  "against_index_trend", "wide_stop", "event_risk". Empty list if none.
-
-What you do not control: entry, stop, target, order type, timing. Hard risk limits run after you and
-override you, so do not reason about account-level limits beyond what is shown.
-
-How to judge:
-- Use only the data in the message. Do not use any knowledge of what this stock did after the signal
-  time, and do not guess at news that is not provided.
-- Reject when the setup is weak on the data shown: breakout bar with poor volume, price far extended
-  from VWAP relative to the stop distance, choppy bars that repeatedly crossed the range, a reward that
-  does not justify the stop, or context notes that point clearly against the trade.
-- Reduce size, rather than reject, when the setup is valid but has one notable concern.
-- Approve at 1.0 only for clean setups. When in doubt, prefer a smaller size over a rejection, and a
-  rejection over a large size.
-"""
-
 
 class SignalFilter(Protocol):
     enabled: bool
@@ -135,102 +109,65 @@ def build_user_message(ctx: ReviewContext) -> str:
     return "Review this signal.\n\n" + json.dumps(payload, indent=1, default=str)
 
 
-class ClaudeSignalFilter:
+class RoleFilter:
+    """An LLM role reviewing signals: it builds the message, asks through the one adapter, and turns the
+    checked reply into an ``LLMDecision``. A call that fails follows ``llm_fail_mode`` (skip by default).
+
+    ``role`` is "trader" (the desk's prompt, with the model's score and the market so far) or
+    "signal_reviewer" (the long-running engine's prompt). Either works with either client.
+    """
+
     enabled = True
+
+    def __init__(self, settings: Settings, role: str, client: Any | None = None, family: str | None = None) -> None:
+        from .adapter import ModelAdapter
+
+        self.s = settings
+        self.role = role
+        self.adapter = ModelAdapter(settings, client, family)
+        self.client = self.adapter.client
 
     @property
     def label(self) -> str:
-        return self.s.llm_model
+        return self.adapter.model
 
-    def __init__(self, settings: Settings, client: Any | None = None) -> None:
-        self.s = settings
-        if client is None:
-            from .provider import anthropic_client
+    def _message(self, ctx: ReviewContext) -> str:
+        if self.role == "trader":
+            from .trader import build_trader_message
 
-            client = anthropic_client(settings)
-        self.client = client
-        self._output_model = _review_output_model()
+            return build_trader_message(ctx)
+        return build_user_message(ctx)
 
     def review(self, ctx: ReviewContext) -> LLMDecision:
-        import anthropic
-
-        prompt = build_user_message(ctx)
-        model = self.s.llm_model
-        started = time.monotonic()
-        try:
-            response = self.client.beta.messages.parse(
-                model=model,
-                max_tokens=16000,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": prompt}],
-                output_format=self._output_model,
-                output_config={"effort": self.s.llm_effort},
-                # On a safety decline, re-run on Anthropic's recommended fallback model.
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-            )
-        except anthropic.RateLimitError as e:
-            return LLMDecision.failed(f"rate_limited: {e.message}", self.s.llm_fail_mode, model, prompt)
-        except anthropic.APIStatusError as e:
-            return LLMDecision.failed(f"api_error_{e.status_code}: {e.message}", self.s.llm_fail_mode, model, prompt)
-        except anthropic.APIConnectionError as e:
-            return LLMDecision.failed(f"connection_error: {e}", self.s.llm_fail_mode, model, prompt)
-        except Exception as e:  # validation errors from parse, etc.
-            log.exception("LLM review failed")
-            return LLMDecision.failed(f"{type(e).__name__}: {e}", self.s.llm_fail_mode, model, prompt)
-
-        latency_ms = int((time.monotonic() - started) * 1000)
-        usage = getattr(response, "usage", None)
-        common = dict(
-            model=getattr(response, "model", model),
-            latency_ms=latency_ms,
-            input_tokens=getattr(usage, "input_tokens", 0) or 0,
-            output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            request_id=getattr(response, "_request_id", None),
-            prompt=prompt,
-        )
-
-        if response.stop_reason == "refusal":
-            details = getattr(response, "stop_details", None)
-            category = getattr(details, "category", None)
-            d = LLMDecision.failed(f"refusal ({category})", self.s.llm_fail_mode, model, prompt)
-            d.latency_ms, d.request_id = latency_ms, common["request_id"]
+        self.adapter.s = self.s  # the engine swaps settings in place when the dashboard changes them
+        reply = self.adapter.ask(self.role, self._message(ctx))
+        common = dict(model=reply.model, latency_ms=reply.latency_ms, input_tokens=reply.input_tokens,
+                      output_tokens=reply.output_tokens, request_id=reply.request_id, prompt=reply.prompt,
+                      role=self.role, harness_id=reply.harness_id, cost_inr=reply.cost_inr)
+        if reply.data is None:
+            d = LLMDecision.failed(reply.error or "no reply", self.s.llm_fail_mode, self.adapter.model, reply.prompt)
+            d.latency_ms, d.request_id, d.role, d.harness_id = reply.latency_ms, reply.request_id, self.role, reply.harness_id
             return d
-        out = response.parsed_output
-        if out is None:
-            d = LLMDecision.failed(f"no parsed output (stop_reason={response.stop_reason})", self.s.llm_fail_mode, model, prompt)
-            d.latency_ms, d.request_id = latency_ms, common["request_id"]
-            return d
-
-        return LLMDecision(
-            approve=out.decision == "approve",
-            size_multiplier=min(max(float(out.size_multiplier), 0.0), 1.0),
-            confidence=min(max(float(out.confidence), 0.0), 1.0),
-            rationale=out.rationale.strip(),
-            risk_flags=[f.strip() for f in out.risk_flags if f.strip()][:10],
-            **common,
-        )
+        out = reply.data
+        return LLMDecision(approve=out["approve"], size_multiplier=out["size_multiplier"], confidence=out["confidence"],
+                           rationale=out["rationale"], risk_flags=out["risk_flags"], **common)
 
 
-def _review_output_model():
-    from typing import Literal
+class ClaudeSignalFilter(RoleFilter):
+    """The signal reviewer through Anthropic's API."""
 
-    from pydantic import BaseModel
-
-    class ReviewOutput(BaseModel):
-        decision: Literal["approve", "reject"]
-        size_multiplier: float
-        confidence: float
-        rationale: str
-        risk_flags: list[str]
-
-    return ReviewOutput
+    def __init__(self, settings: Settings, client: Any | None = None, role: str = "signal_reviewer") -> None:
+        super().__init__(settings, role, client, family="anthropic")
 
 
-def build_filter(settings: Settings, reviewer: str = "auto") -> SignalFilter:
+def build_filter(settings: Settings, reviewer: str = "auto", role: str | None = None) -> SignalFilter:
     """``auto``: the configured LLM when it is enabled (an OpenAI-compatible endpoint, or Claude through
     Anthropic's API), else none. ``heuristic``: the free rule-based baseline. Which key and model are in
-    use is settled before this is called (``credentials.apply_credentials``)."""
+    use is settled before this is called (``credentials.apply_credentials``).
+
+    ``role`` names the harness role to ask. Left out, it is what each client was always given: the
+    trader's prompt on an OpenAI-compatible endpoint, the signal reviewer's on Anthropic.
+    """
     if reviewer == "heuristic":
         return HeuristicFilter(settings)
     if reviewer == "none" or not settings.llm_enabled:
@@ -238,5 +175,14 @@ def build_filter(settings: Settings, reviewer: str = "auto") -> SignalFilter:
     if settings.chat_llm:
         from .trader import ChatSignalFilter
 
-        return ChatSignalFilter(settings)
-    return ClaudeSignalFilter(settings)
+        return ChatSignalFilter(settings, role=role or "trader")
+    return ClaudeSignalFilter(settings, role=role or "signal_reviewer")
+
+
+def __getattr__(name: str) -> Any:
+    # The prompt lives in the harness now (roles/signal_reviewer.md); the old name still reads it.
+    if name == "SYSTEM_PROMPT":
+        from .. import harness
+
+        return harness.current().prompt("signal_reviewer")
+    raise AttributeError(name)

@@ -7,7 +7,7 @@ Longer explanation and a troubleshooting table: [`docs/no-server.md`](docs/no-se
 ## 1. Supabase
 
 1. **Project:** use the existing Thunderbot project, or create one in Mumbai (`ap-south-1`). Free plan is enough.
-2. **Apply the six migrations, in filename order** (`supabase db push`, or run each file in the SQL editor):
+2. **Apply the seven migrations, in filename order** (`supabase db push`, or run each file in the SQL editor):
    ```
    supabase/migrations/20261016000000_init.sql
    supabase/migrations/20261016120000_platform.sql
@@ -15,6 +15,7 @@ Longer explanation and a troubleshooting table: [`docs/no-server.md`](docs/no-se
    supabase/migrations/20261111000100_scheduler.sql      -- pg_cron + pg_net jobs, wake() and watchdog()
    supabase/migrations/20261112000000_ai_desk.sql        -- models table; allows job kind 'train'
    supabase/migrations/20261113000000_secrets.sql        -- encrypted keys from the Setup screen; job kind 'groww_check'
+   supabase/migrations/20261114000000_harness.sql        -- harness_id and role-scoring columns; job kind 'gates'
    ```
    If the last one fails on `create extension pg_cron`, enable **Cron** under Integrations first, then rerun it.
    Do not add RLS policies: every table has RLS on with no policies, and only the secret key may read or write.

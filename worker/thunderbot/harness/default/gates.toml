@@ -1,0 +1,36 @@
+# Gates: how an LLM role earns the right to affect a trade, and how it loses it.
+#
+# A role starts in "shadow": it is asked, its answer is written down, and the engine carries on as if
+# it had said "take at full size". Each setup the role was asked about is later scored as
+#
+#     delta = (w - 1) x R - c
+#
+# where w is the share of normal size the role asked for (0 for a veto), R is what the setup went on
+# to make in units of risk after charges and slippage, and c is what the call cost, in the same units.
+# A veto of a loser scores positive, a veto of a winner negative, and leaving a setup alone scores -c.
+#
+# The running average of delta is wrapped in a confidence sequence that stays valid however often
+# you look at it. A role moves to "active" when it has n_min scored setups and the lower bound is
+# above zero. It moves back to "shadow" when the upper bound is below zero, or when it has cost
+# demote_cum_r in total. Only forward paper and live decisions count; replays and backtests never do.
+# Editing any file in this harness changes its id and every scored role starts again in shadow.
+
+[defaults]
+alpha = 0.05            # 95% confidence, valid at every look
+n_min = 100             # scored setups needed before a promotion is possible (at least 30)
+r_bounds = [-2.0, 4.0]  # R is clipped to this range before scoring
+max_call_cost_r = 0.5   # a call's cost is capped at this many R
+demote_cum_r = -5.0     # an active role that has cost this much in total goes back to shadow
+
+[roles.trader]
+stage = "shadow"
+scored = true
+
+[roles.signal_reviewer]
+stage = "shadow"
+scored = true
+
+[roles.rebalance_reviewer]
+# It can only postpone a rebalance by a session, twice at most, and is not scored in R.
+stage = "active"
+scored = false

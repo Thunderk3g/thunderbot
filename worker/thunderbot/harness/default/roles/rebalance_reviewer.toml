@@ -1,0 +1,10 @@
+label = "Rebalance checker"
+purpose = "Reads the orders a daily plan is about to place and the prices behind them, and may postpone the rebalance by one session when something looks broken."
+may = "postpone"
+reads = [
+  "the plan's target shares and the whole-share orders that reach them",
+  "price facts for each instrument: the latest price and recent changes",
+  "how many postponements have been used",
+]
+on_failure = "The rule goes ahead without the check."
+prompt = "rebalance_reviewer.md"

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -56,6 +57,20 @@ def _jsonable(value: Any) -> Any:
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def _unknown_column(resp: Any) -> str | None:
+    """The column PostgREST says a table does not have (error PGRST204), or None."""
+    if getattr(resp, "status_code", 200) != 400:
+        return None
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get("code") != "PGRST204":
+        return None
+    found = re.search(r"'([^']+)' column", str(body.get("message") or ""))
+    return found.group(1) if found else None
 
 
 class Store(Protocol):
@@ -170,9 +185,22 @@ class SupabaseStore:
         # Legacy service_role keys are JWTs and also go in Authorization; new sb_secret_ keys must not.
         if service_key.startswith("eyJ"):
             self.http.headers["Authorization"] = f"Bearer {service_key}"
+        self._warned: set[tuple[str, str]] = set()
 
     def insert(self, table: str, row: dict[str, Any]) -> None:
-        resp = self.http.post(f"{self.base}/{table}", data=json.dumps(_jsonable(row), default=str), timeout=self.timeout)
+        row = _jsonable(row)
+        # A worker that is newer than the database writes columns the database does not have yet. Losing a
+        # journal row, or a trading pass, over a bookkeeping column would be worse than leaving it out, so
+        # the row is sent again without it and the gap is logged once. Applying the migration fixes it.
+        for _ in range(12):
+            resp = self.http.post(f"{self.base}/{table}", data=json.dumps(row, default=str), timeout=self.timeout)
+            unknown = _unknown_column(resp)
+            if unknown is None or unknown not in row:
+                break
+            if (table, unknown) not in self._warned:
+                self._warned.add((table, unknown))
+                log.warning("the %s table has no %s column yet; apply the latest migration in supabase/migrations", table, unknown)
+            row = {k: v for k, v in row.items() if k != unknown}
         resp.raise_for_status()
 
     def select(self, table: str, filters: dict[str, Any] | None = None, order: str = "created_at",
