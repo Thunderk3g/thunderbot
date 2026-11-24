@@ -134,6 +134,36 @@ def test_handle_health_tick_and_errors(tmp_path, monkeypatch):
     assert any("yahoo down" in e["message"] for e in store.local.rows("events"))
 
 
+def test_tick_survives_a_read_only_data_dir(tmp_path, monkeypatch):
+    """On Vercel the code directory is read-only: the default relative "var" cannot be created there."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, so nothing can be created beneath it")
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    monkeypatch.setattr(serverless.tempfile, "gettempdir", lambda: str(temp))
+    s = Settings(data_dir=str(blocker / "var"))
+    seen = {}
+
+    class Runner:
+        def tick(self):
+            return {"did": "idle", "mode": "paper"}
+
+    def build(settings, st):
+        seen["token_cache"] = settings.data_path / "groww_token.json"  # what the real build_runner asks for
+        return Runner()
+
+    store = CompositeStore(SQLiteStore(tmp_path / "j.sqlite3"))
+    monkeypatch.setattr(serverless, "build_runner", build)
+    monkeypatch.setattr(serverless, "run_intraday", lambda settings, st: {"intraday": "off"})
+    code, body = serverless.handle("tick", settings=s, store=store)
+    assert code == 200 and body["did"] == "idle"
+    assert seen["token_cache"] == temp / "thunderbot" / "groww_token.json" and seen["token_cache"].parent.is_dir()
+    assert not any(e["kind"] == "error" for e in store.local.rows("events"))
+
+    kept = Settings(data_dir=str(tmp_path / "var"))  # a writable directory is left alone
+    assert serverless.writable_data_dir(kept) is kept
+
+
 def test_job_op_runs_a_queued_invest_backtest(tmp_path, monkeypatch):
     from datetime import timedelta
 

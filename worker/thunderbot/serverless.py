@@ -20,7 +20,10 @@ import base64
 import hmac
 import logging
 import os
+import tempfile
 import time
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from .clock import now_ist, parse_hhmm
@@ -46,6 +49,25 @@ def authorized(headers: dict[str, str], env: dict[str, str] | None = None) -> bo
             return False
         return hmac.compare_digest(got_user.encode(), user.encode()) and hmac.compare_digest(got_pass.encode(), password.encode())
     return False
+
+
+def writable_data_dir(settings: Settings) -> Settings:
+    """Point the data directory at the temp directory when the configured one cannot be written.
+
+    A function's code directory is read-only (Vercel, Lambda); only the temp directory accepts files, and
+    it lasts as long as the instance stays warm. That is enough here: the only things kept on disk are
+    caches (the Groww token, price files), and everything durable is in Supabase.
+    """
+    try:
+        path = Path(settings.data_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        if os.access(path, os.W_OK):
+            return settings
+    except OSError:
+        pass
+    fallback = Path(tempfile.gettempdir()) / "thunderbot"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return replace(settings, data_dir=str(fallback))
 
 
 def build_runner(settings: Settings, store: Any, scheduler: str = "serverless"):
@@ -120,6 +142,7 @@ def handle(op: str, params: dict[str, str] | None = None, settings: Settings | N
             return 200, {"ok": True, "at": now_ist().isoformat(), "supabase": bool(settings.supabase_url and settings.supabase_service_key),
                          "strategy": settings.invest_strategy, "run_at": settings.invest_at, "liquid_symbol": settings.liquid_symbol,
                          "reviewer": settings.llm_enabled, "llm": settings.llm_provider, "mode": "paper"}
+        settings = writable_data_dir(settings)
         store = store or build_remote_store(settings.supabase_url, settings.supabase_service_key)
         # Keys saved from the dashboard's setup screen win over the environment's. They cover the LLM and
         # the Groww login; nothing saved there can enable real orders.
